@@ -1,4 +1,3 @@
-// models/Plan.js
 import mongoose from "mongoose";
 
 const planSchema = new mongoose.Schema(
