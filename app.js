@@ -36,7 +36,7 @@ app.use(
 /* =========================================================
    CORS CONFIGURATION
 ========================================================= */
-const allowedOrigin = process.env.CORS_ORIGIN || "http://localhost:3000";
+const allowedOrigin = process.env.CORS_ORIGIN || "https://folo-laundry-pro.onrender.com";
 
 const corsOptions = {
   origin: allowedOrigin,
