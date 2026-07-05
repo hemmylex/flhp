@@ -12,11 +12,14 @@ import paymentRoutes from "./routes/payment.routes.js";
 import planRoutes from "./routes/plan.routes.js";
 import serviceRoutes from "./routes/service.routes.js";
 import orderRoutes from "./routes/order.routes.js";
-
 import customerRoutes from "./routes/customer.routes.js";
 import expenseRoutes from "./routes/expense.routes.js";
 import teamRoutes from "./routes/team.routes.js";
 import reportRoutes from "./routes/reports.routes.js";
+import referralRoutes from "./routes/referral.routes.js";
+import profileRoutes from "./routes/profile.routes.js";
+import receptionistAuthRoutes from "./routes/staff.auth.routes.js";
+
 const app = express();
 
 /* =========================================================
@@ -36,19 +39,38 @@ app.use(
 /* =========================================================
    CORS CONFIGURATION
 ========================================================= */
-const allowedOrigin = process.env.CORS_ORIGIN || "https://folo-laundry-pro.onrender.com";
+const getAllowedOrigins = () => {
+  const envOrigin = process.env.CORS_ORIGIN;
+  if (!envOrigin) {
+    return ["https://fololaundrypro.com.ng", "https://www.fololaundrypro.com.ng"];
+  }
+  // Split comma-separated environment variable strings and trim trailing whitespaces
+  return envOrigin.split(",").map(origin => origin.trim());
+};
+
+const allowedOrigins = getAllowedOrigins();
 
 const corsOptions = {
-  origin: allowedOrigin,
+  origin: function (origin, callback) {
+    // Allow non-browser client tooling executions cleanly (like Server-to-Server, Postman, or uptime pings)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS BLOCK ALERT: Origin [${origin}] is missing from tracking allowances.`);
+      callback(new Error("Not allowed by CORS policy rules for FOLO Laundry Pro"));
+    }
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
 
-// Fixed: Enable pre-flight requests globally across all application API paths
-app.options("all", cors(corsOptions));
 
 /* =========================================================
    HTTP PARAM POLLUTION & COOKIES & COMPRESSION
@@ -106,6 +128,9 @@ app.use("/api/v1/customers", customerRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/team", teamRoutes);
 app.use("/api/v1/reports", reportRoutes);
+app.use("/api/v1/referrals", referralRoutes);
+app.use("/api/v1/profiles", profileRoutes);
+app.use("/api/v1/auth/receptionist", receptionistAuthRoutes);
 
 /* =========================================================
    404 HANDLER
