@@ -4,22 +4,27 @@ dotenv.config();
 import app from "./app.js";
 import pool from "./config/db.js";
 
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT) || 8080;
 
-async function startServer() {
+// Start the HTTP server first
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+});
+
+// Check the database connection separately
+async function connectDatabase() {
   try {
     const result = await pool.query("SELECT NOW()");
     console.log("✅ PostgreSQL connected");
     console.log("Database time:", result.rows[0].now);
-
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
   } catch (err) {
     console.error("❌ PostgreSQL connection failed");
     console.error(err);
-    process.exit(1);
+
+    // Keep the server running so Render sees an open port.
+    // Your application can retry later or return appropriate
+    // errors for endpoints that require the database.
   }
 }
 
-startServer();
+connectDatabase();
