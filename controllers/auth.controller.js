@@ -332,7 +332,6 @@ export const resetPassword = async (req, res) => {
   }
 };
 
-import pool from "../config/db.js";
 
 export const logout = async (req, res) => {
   try {
