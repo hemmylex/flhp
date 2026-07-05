@@ -18,8 +18,7 @@ const pool = new Pool({
   port: process.env.PG_PORT || 5432,
 });
 
-pool
-  .connect()
+pool.connect()
   .then(async (client) => {
     try {
       const res = await client.query("SELECT NOW()");
