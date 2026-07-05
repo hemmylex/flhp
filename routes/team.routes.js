@@ -1,19 +1,21 @@
 import express from "express";
-import {
-  getTeamMembers,
-  createTeamMember,
-  updateTeamMember,
-  deleteTeamMember,
+import { 
+  getBusinessReceptionists, 
+  createBusinessReceptionist, 
+  updateBusinessReceptionist, 
+  deleteBusinessReceptionist,
 } from "../controllers/team.controller.js";
-import { authMiddleware } from "../middleware/auth.middleware.js";
+import { authMiddleware } from "../middleware/auth.middleware.js"; 
 
 const router = express.Router();
+router.use(authMiddleware); 
 
-router.use(authMiddleware);
+router.route("/receptionists")
+  .get(getBusinessReceptionists)
+  .post(createBusinessReceptionist);
 
-router.get("/", getTeamMembers);
-router.post("/", createTeamMember);
-router.put("/:id", updateTeamMember);
-router.delete("/:id", deleteTeamMember);
+router.route("/receptionists/:id")
+  .put(updateBusinessReceptionist)
+  .delete(deleteBusinessReceptionist);
 
 export default router;
