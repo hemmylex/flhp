@@ -1,109 +1,131 @@
+import pool from "../db.js";
 import bcrypt from "bcryptjs";
-import TeamMember from "../models/TeamMember.js";
 
-export const getTeamMembers = async (req, res) => {
+export const getBusinessReceptionists = async (req, res) => {
   try {
-    const members = await TeamMember.find({ userId: req.user._id }).sort({ name: 1 });
+    const ownerId = req.user.id;
+
+    const result = await pool.query(
+      `SELECT id, business_id, name, email, role, created_at
+       FROM receptionists
+       WHERE business_id = $1
+       ORDER BY created_at DESC`,
+      [ownerId]
+    );
 
     return res.status(200).json({
       success: true,
-      data: members,
+      receptionists: result.rows,
     });
   } catch (err) {
-    console.error("GET_TEAM_MEMBERS_ERROR:", err);
-    return res.status(500).json({ success: false, message: "Failed to retrieve team members" });
+    console.error("GET RECEPTIONISTS ERROR:", err);
+    return res.status(500).json({ success: false, message: "Failed to read staff database." });
   }
 };
 
-export const createTeamMember = async (req, res) => {
+export const createBusinessReceptionist = async (req, res) => {
   try {
-    const { name, email, role, password } = req.body;
+    const { name, email, password } = req.body;
+    const ownerId = req.user.id;
 
     if (!name || !email || !password) {
-      return res.status(400).json({ success: false, message: "Name, email, and password are required" });
+      return res.status(400).json({ success: false, message: "All parameters are required." });
     }
 
-    const normalizedRole = String(role || "Receptionist").trim().toLowerCase();
-    const roleMap = {
-      receptionist: "Receptionist",
-      staff: "Receptionist",
-      admin: "Admin",
-    };
-    const finalRole = roleMap[normalizedRole] || role || "Receptionist";
+    const existingStaff = await pool.query("SELECT id FROM receptionists WHERE email = $1", [email.toLowerCase()]);
+    if (existingStaff.rows.length > 0) {
+      return res.status(400).json({ success: false, message: "This email address is already assigned to a staff workspace." });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    const member = await TeamMember.create({
-      userId: req.user._id,
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
-      role: finalRole,
-      password: hashedPassword,
-    });
-
-    const { password: _password, ...memberData } = member.toObject();
+    const insertStaff = await pool.query(
+      `INSERT INTO receptionists (business_id, name, email, password, role)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, business_id, name, email, role, created_at`,
+      [ownerId, name.trim(), email.toLowerCase().trim(), hashedPassword, "receptionist"]
+    );
 
     return res.status(201).json({
       success: true,
-      data: memberData,
+      message: "Staff member provisioned successfully.",
+      receptionist: insertStaff.rows[0],
     });
   } catch (err) {
-    console.error("CREATE_TEAM_MEMBER_ERROR:", err);
-    return res.status(500).json({ success: false, message: "Failed to create team member" });
+    console.error("CREATE RECEPTIONIST ERROR:", err);
+    return res.status(500).json({ success: false, message: "Database execution error during provisioning." });
   }
 };
 
-export const updateTeamMember = async (req, res) => {
+export const updateBusinessReceptionist = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, role, password } = req.body;
+    const { name, email, password } = req.body;
+    const ownerId = req.user.id;
 
-    const member = await TeamMember.findOne({ _id: id, userId: req.user._id });
-    if (!member) {
-      return res.status(404).json({ success: false, message: "Team member not found" });
+    const result = await pool.query("SELECT * FROM receptionists WHERE id = $1 AND business_id = $2", [id, ownerId]);
+    const receptionist = result.rows[0];
+    if (!receptionist) {
+      return res.status(404).json({ success: false, message: "Staff profile not found within your workspace." });
     }
 
-    const normalizedRole = String(role || "").trim().toLowerCase();
-    const roleMap = {
-      receptionist: "Receptionist",
-      staff: "Receptionist",
-      admin: "Admin",
-    };
+    let updatedName = receptionist.name;
+    let updatedEmail = receptionist.email;
+    let updatedPassword = receptionist.password;
 
-    if (name) member.name = name.trim();
-    if (email) member.email = email.trim().toLowerCase();
-    if (role) member.role = roleMap[normalizedRole] || role;
-    if (password) member.password = await bcrypt.hash(password, 12);
+    if (name) updatedName = name.trim();
 
-    await member.save();
+    if (email) {
+      const emailLower = email.toLowerCase().trim();
+      if (emailLower !== receptionist.email) {
+        const overlap = await pool.query("SELECT id FROM receptionists WHERE email = $1", [emailLower]);
+        if (overlap.rows.length > 0) {
+          return res.status(400).json({ success: false, message: "Email is already taken by another account." });
+        }
+        updatedEmail = emailLower;
+      }
+    }
 
-    const { password: _password, ...memberData } = member.toObject();
+    if (password && password.trim() !== "") {
+      updatedPassword = await bcrypt.hash(password, 12);
+    }
+
+    const updateResult = await pool.query(
+      `UPDATE receptionists
+       SET name = $1, email = $2, password = $3
+       WHERE id = $4 AND business_id = $5
+       RETURNING id, business_id, name, email, role, created_at`,
+      [updatedName, updatedEmail, updatedPassword, id, ownerId]
+    );
 
     return res.status(200).json({
       success: true,
-      data: memberData,
+      message: "Staff parameters updated successfully.",
+      receptionist: updateResult.rows[0],
     });
   } catch (err) {
-    console.error("UPDATE_TEAM_MEMBER_ERROR:", err);
-    return res.status(500).json({ success: false, message: "Failed to update team member" });
+    console.error("UPDATE RECEPTIONIST ERROR:", err);
+    return res.status(500).json({ success: false, message: "Failed to update staff parameters." });
   }
 };
 
-export const deleteTeamMember = async (req, res) => {
+export const deleteBusinessReceptionist = async (req, res) => {
   try {
     const { id } = req.params;
+    const ownerId = req.user.id;
 
-    const deleted = await TeamMember.findOneAndDelete({ _id: id, userId: req.user._id });
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: "Team member not found" });
+    const deletionResult = await pool.query("DELETE FROM receptionists WHERE id = $1 AND business_id = $2", [id, ownerId]);
+
+    if (deletionResult.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "Staff account not found or unauthorized." });
     }
 
     return res.status(200).json({
       success: true,
-      message: "Team member removed successfully",
+      message: "Staff member access revoked completely.",
     });
   } catch (err) {
-    console.error("DELETE_TEAM_MEMBER_ERROR:", err);
-    return res.status(500).json({ success: false, message: "Failed to delete team member" });
+    console.error("DELETE RECEPTIONIST ERROR:", err);
+    return res.status(500).json({ success: false, message: "Failed to clear account data from registry." });
   }
 };
