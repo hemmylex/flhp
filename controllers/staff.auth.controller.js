@@ -1,6 +1,6 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-import pool from "../db.js";
+import pool from "../config/db.js";
 
 export const receptionistLogin = async (req, res) => {
   try {
