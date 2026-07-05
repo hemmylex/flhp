@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import pool from "../config/db.js";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { sendVerificationEmail, sendPasswordResetEmail } from "../services/mail.service.js";
