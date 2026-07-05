@@ -1,20 +1,23 @@
-import Expense from "../models/Expense.js";
+import pool from "../config/db.js";
 
 export const getExpenses = async (req, res) => {
   try {
     const { month } = req.query;
-    const filter = { userId: req.user._id };
+    const userId = req.user.id;
+
+    let query = "SELECT * FROM expenses WHERE user_id = $1";
+    let params = [userId];
 
     if (month) {
-      filter.date = month;
+      query += " AND TO_CHAR(date, 'YYYY-MM') = $2";
+      params.push(month);
     }
 
-    const expenses = await Expense.find(filter).sort({ date: -1, createdAt: -1 });
+    query += " ORDER BY date DESC, created_at DESC";
 
-    return res.status(200).json({
-      success: true,
-      data: expenses,
-    });
+    const result = await pool.query(query, params);
+
+    return res.status(200).json({ success: true, data: result.rows });
   } catch (err) {
     console.error("GET_EXPENSES_ERROR:", err);
     return res.status(500).json({ success: false, message: "Failed to retrieve expense records" });
@@ -24,6 +27,7 @@ export const getExpenses = async (req, res) => {
 export const createExpense = async (req, res) => {
   try {
     const { name, description, method, paymentMethod, date, amount } = req.body;
+    const userId = req.user.id;
 
     if (!name || amount === undefined || amount === null || !date) {
       return res.status(400).json({ success: false, message: "Expense name, date, and amount are required" });
@@ -36,26 +40,17 @@ export const createExpense = async (req, res) => {
 
     const rawMethod = method || paymentMethod || "Cash";
     const normalizedMethod = String(rawMethod).trim().toLowerCase();
-    const methodMap = {
-      cash: "Cash",
-      transfer: "Transfer",
-      pos: "POS",
-    };
+    const methodMap = { cash: "Cash", transfer: "Transfer", pos: "POS" };
     const finalMethod = methodMap[normalizedMethod] || rawMethod || "Cash";
 
-    const expense = await Expense.create({
-      userId: req.user._id,
-      name: name.trim(),
-      description: description || "",
-      method: finalMethod,
-      date,
-      amount: parsedAmount,
-    });
+    const result = await pool.query(
+      `INSERT INTO expenses (user_id, name, description, method, date, amount)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING *`,
+      [userId, name.trim(), description || "", finalMethod, date, parsedAmount]
+    );
 
-    return res.status(201).json({
-      success: true,
-      data: expense,
-    });
+    return res.status(201).json({ success: true, data: result.rows[0] });
   } catch (err) {
     console.error("CREATE_EXPENSE_ERROR:", err);
     return res.status(500).json({ success: false, message: "Failed to create expense record" });
@@ -66,30 +61,34 @@ export const updateExpense = async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, method, date, amount } = req.body;
+    const userId = req.user.id;
 
-    const expense = await Expense.findOne({ _id: id, userId: req.user._id });
-    if (!expense) {
+    const existing = await pool.query("SELECT * FROM expenses WHERE id = $1 AND user_id = $2", [id, userId]);
+    if (existing.rows.length === 0) {
       return res.status(404).json({ success: false, message: "Expense record not found" });
     }
 
-    if (name) expense.name = name.trim();
-    if (description !== undefined) expense.description = description.trim();
-    if (method) expense.method = method;
-    if (date) expense.date = date;
+    let parsedAmount = existing.rows[0].amount;
     if (amount !== undefined) {
-      const parsedAmount = Number(amount);
+      parsedAmount = Number(amount);
       if (Number.isNaN(parsedAmount) || parsedAmount < 0) {
         return res.status(400).json({ success: false, message: "Expense amount must be a valid non-negative number" });
       }
-      expense.amount = parsedAmount;
     }
 
-    await expense.save();
+    const result = await pool.query(
+      `UPDATE expenses
+       SET name = COALESCE($1,name),
+           description = COALESCE($2,description),
+           method = COALESCE($3,method),
+           date = COALESCE($4,date),
+           amount = $5
+       WHERE id = $6 AND user_id = $7
+       RETURNING *`,
+      [name?.trim(), description?.trim(), method, date, parsedAmount, id, userId]
+    );
 
-    return res.status(200).json({
-      success: true,
-      data: expense,
-    });
+    return res.status(200).json({ success: true, data: result.rows[0] });
   } catch (err) {
     console.error("UPDATE_EXPENSE_ERROR:", err);
     return res.status(500).json({ success: false, message: "Failed to update expense record" });
@@ -99,16 +98,15 @@ export const updateExpense = async (req, res) => {
 export const deleteExpense = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.user.id;
 
-    const deleted = await Expense.findOneAndDelete({ _id: id, userId: req.user._id });
-    if (!deleted) {
+    const result = await pool.query("DELETE FROM expenses WHERE id = $1 AND user_id = $2", [id, userId]);
+
+    if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Expense record not found" });
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "Expense removed successfully",
-    });
+    return res.status(200).json({ success: true, message: "Expense removed successfully" });
   } catch (err) {
     console.error("DELETE_EXPENSE_ERROR:", err);
     return res.status(500).json({ success: false, message: "Failed to delete expense record" });
