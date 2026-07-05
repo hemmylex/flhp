@@ -111,23 +111,6 @@ const generateRefreshToken = (user) => {
   );
 };
 
-
-const generateAccessToken = (user) => {
-  return jwt.sign(
-    { id: user.id, role: user.role || "user" },
-    process.env.JWT_SECRET,
-    { expiresIn: "15m" }
-  );
-};
-
-const generateRefreshToken = (user) => {
-  return jwt.sign(
-    { id: user.id },
-    process.env.REFRESH_TOKEN_SECRET || process.env.JWT_REFRESH_SECRET,
-    { expiresIn: "7d" }
-  );
-};
-
 export const login = async (req, res) => {
   try {
     const { email, password, deviceId } = req.body;
