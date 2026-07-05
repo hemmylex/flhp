@@ -1,7 +1,7 @@
 import pool from "../db.js";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { sendVerificationEmail } from "../services/mail.service.js";
+import { sendVerificationEmail, sendPasswordResetEmail } from "../services/mail.service.js";
 
 export const register = async (req, res) => {
   try {
@@ -202,3 +202,149 @@ export const refreshToken = async (req, res) => {
   }
 };
 
+export const staffLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: "Email and password are required." });
+    }
+
+    // Find receptionist by email
+    const staffResult = await pool.query("SELECT * FROM receptionists WHERE email = $1", [email.toLowerCase().trim()]);
+    const staff = staffResult.rows[0];
+
+    if (!staff || staff.role.toLowerCase() !== "receptionist") {
+      return res.status(401).json({ success: false, message: "Invalid credentials or staff clearance missing." });
+    }
+
+    // Verify password
+    const isMatch = await bcrypt.compare(password, staff.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: "Invalid credentials." });
+    }
+
+    // Fetch parent owner profile
+    const ownerResult = await pool.query("SELECT * FROM users WHERE id = $1", [staff.business_id]);
+    const masterOwner = ownerResult.rows[0];
+
+    if (!masterOwner || masterOwner.plan_status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message: "Access Suspended: The master laundry plan subscription is currently inactive."
+      });
+    }
+
+    // Sign receptionist token with shopOwnerId anchor
+    const token = jwt.sign(
+      {
+        id: staff.id,
+        role: staff.role,
+        shopOwnerId: staff.business_id
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "12h" } // Bound to operational shift timeline
+    );
+
+    return res.status(200).json({
+      success: true,
+      token,
+      user: {
+        id: staff.id,
+        name: staff.name,
+        email: staff.email,
+        role: staff.role,
+        businessName: masterOwner.business_name
+      }
+    });
+  } catch (err) {
+    console.error("STAFF_LOGIN_ERROR:", err);
+    return res.status(500).json({ success: false, message: "Server workforce login runtime failure." });
+  }
+};
+
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email address is required." });
+    }
+
+    const result = await pool.query("SELECT id, email, business_name, owner_name FROM users WHERE email = $1", [email.toLowerCase()]);
+    const user = result.rows[0];
+
+    // Security best practice: don't reveal if user doesn't exist
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If that email address exists in our database, a recovery link has been dispatched."
+      });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 3600000); // 1 hour
+
+    await pool.query(
+      "UPDATE users SET reset_password_token = $1, reset_password_expires = $2 WHERE id = $3",
+      [resetToken, expiresAt, user.id]
+    );
+
+    try {
+      await sendPasswordResetEmail({
+        email: user.email,
+        token: resetToken,
+        businessName: user.business_name || user.owner_name
+      });
+    } catch (mailError) {
+      console.error("FORGOT PASSWORD MAIL ERROR:", mailError);
+      return res.status(500).json({ success: false, message: "Failed to dispatch recovery mail. Try again." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "If that email address exists in our database, a recovery link has been dispatched."
+    });
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+    return res.status(500).json({ success: false, message: "Server encountered an operational exception." });
+  }
+};
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { token } = req.query;
+    const { password } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: "Reset token signature is missing." });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+    }
+
+    const result = await pool.query(
+      "SELECT id FROM users WHERE reset_password_token = $1 AND reset_password_expires > NOW()",
+      [token]
+    );
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: "Recovery token is invalid or has expired." });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    await pool.query(
+      "UPDATE users SET password = $1, reset_password_token = NULL, reset_password_expires = NULL WHERE id = $2",
+      [hashedPassword, user.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Your account password has been updated successfully. Please log in."
+    });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    return res.status(500).json({ success: false, message: "Server encountered an operational exception." });
+  }
+};
