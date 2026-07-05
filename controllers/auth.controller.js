@@ -331,3 +331,34 @@ export const resetPassword = async (req, res) => {
     return res.status(500).json({ success: false, message: "Server encountered an operational exception." });
   }
 };
+
+import pool from "../config/db.js";
+
+export const logout = async (req, res) => {
+  try {
+    const token = req.cookies?.refreshToken;
+
+    if (token) {
+      // Find user by refresh token
+      const result = await pool.query("SELECT id FROM users WHERE refresh_token = $1", [token]);
+      const user = result.rows[0];
+
+      if (user) {
+        // Clear refresh token in DB
+        await pool.query("UPDATE users SET refresh_token = NULL WHERE id = $1", [user.id]);
+      }
+    }
+
+    // Clear cookie
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
+    });
+
+    return res.status(200).json({ success: true, message: "Logged out safely" });
+  } catch (err) {
+    console.error("LOGOUT ERROR:", err);
+    return res.status(500).json({ success: false, message: "Logout failed" });
+  }
+};
