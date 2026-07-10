@@ -1,17 +1,35 @@
-// db.js
-import pkg from "pg";
-const { Pool } = pkg;
+// config/db.js
+import axios from "axios";
 
-const pool = new Pool({
-  user: process.env.PG_USER,
-  host: process.env.PG_HOST,
-  database: process.env.PG_DATABASE,
-  password: process.env.PG_PASSWORD,
-  port: Number(process.env.PG_PORT) || 5432,
-  ssl:
-    process.env.NODE_ENV === "production"
-      ? { rejectUnauthorized: false }
-      : false,
-});
+const pool = {
+  query: async (text, params = []) => {
+    try {
+      const response = await axios.post(
+        "https://query.fololaundrypro.com.ng/query.php",
+        {
+          sql: text,
+          values: params,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.BRIDGE_SECRET_KEY}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15000, // 15 seconds timeout
+        }
+      );
+
+      return {
+        rows: response.data.rows || [],
+        rowCount: response.data.rowCount || 0,
+      };
+    } catch (error) {
+      if (error.response && error.response.data && error.response.data.error) {
+        throw new Error(error.response.data.error);
+      }
+      throw new Error(`Bridge failure: ${error.message}`);
+    }
+  },
+};
 
 export default pool;
