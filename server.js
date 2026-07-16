@@ -1,4 +1,4 @@
-//server.js
+// server.js
 import 'dotenv/config';
 import express from 'express';
 import cookieParser from 'cookie-parser';
@@ -34,12 +34,37 @@ REQUIRED_ENV.forEach(variable => {
 
 const app = express();
 
-// 1. Production Telemetry Endpoints (Placed ABOVE Helmet and Rate Limiters to guarantee rapid platform pings)
-app.get('/health', (_req, res) => res.status(200).json({ 
-  ok: true, 
-  timestamp: new Date().toISOString(),
-  env: process.env.NODE_ENV || 'development'
-}));
+// 1. Deep Active Telemetry Endpoint (Placed ABOVE security layers to guarantee rapid platform pings)
+app.get('/health', async (_req, res) => {
+  const start = Date.now();
+  
+  try {
+    // Force a strict gateway timeout fallback check to prevent hanging connection states
+    const dbCheckPromise = pool.query('SELECT NOW()');
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database handshake timed out')), 3000)
+    );
+
+    // Race the query execution against our 3-second timeout window
+    await Promise.race([dbCheckPromise, timeoutPromise]);
+
+    return res.status(200).json({ 
+      status: 'healthy', 
+      timestamp: new Date().toISOString(),
+      latencyMs: Date.now() - start
+    });
+
+  } catch (err) {
+    console.error('HEALTH CHECK FAILURE:', err.message || err);
+    
+    // Return a 503 Service Unavailable code to force platform routing layers to isolate this instance
+    return res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: 'Upstream data service layer connection verification failed.'
+    });
+  }
+});
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }, 
@@ -67,12 +92,10 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Gracefully bypass security validation locks for platform internal monitoring checks or tool configurations
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
     
-    // Construct a safe, low-verbosity error payload for unverified browser clients
     const corsError = new Error('CORS Policy Restriction: Origin Unauthorized.');
     corsError.status = 403;
     return callback(corsError);
@@ -106,7 +129,7 @@ app.use((err, _req, res, _next) => {
 });
 
 const port = process.env.PORT || 4000;
-// 3. Highlighted Fix: Bind server explicitly to 0.0.0.0 to unlock external routing access across Render's proxy
+// 3. Bind server explicitly to 0.0.0.0 to unlock external routing access across Render's proxy
 const server = app.listen(port, '0.0.0.0', async () => {
   console.log(`=======================================================`);
   console.log(` VoteFlow Secure Core Engine Active [Supabase SDK Mode]`);
