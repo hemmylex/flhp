@@ -1,49 +1,60 @@
 // src/db/pool.js
-import pg from 'pg';
+import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 
-// 1. Configure production-ready Pool settings
-const poolConfig = {
-  connectionString: process.env.DATABASE_URL,
-  
-  // Connection Pool management rules
-  max: 20, // Maintain a ceiling of 20 active clients in the pool to protect system memory
-  idleTimeoutMillis: 30000, // Close idle database clients automatically after 30 seconds
-  connectionTimeoutMillis: 4000, // Crash quickly (4s) instead of stalling if database goes down
-};
+const supabaseUrl = process.env.PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// 2. Automatically apply SSL encryption configurations when running in production
-if (process.env.NODE_ENV === 'production') {
-  poolConfig.ssl = {
-    rejectUnauthorized: false // Required for managed services like Supabase/Neon/Heroku
-  };
+if (!supabaseUrl || !supabaseServiceKey) {
+  console.error('FATAL SYSTEM EXCEPTION: Supabase authentication URL or Service Role configuration keys are missing.');
+  process.exit(1);
 }
 
-export const pool = new pg.Pool(poolConfig);
-
-// 3. Critically Important: Global event listener to keep Node from crashing if an active socket drops
-pool.on('error', (err) => {
-  console.error('CRITICAL: Unexpected idle database client connection pool exception:', err.message);
+// 1. Initialize a unified administrative client instance with automatic bypass privileges
+export const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    persistSession: false, // Disables local state management to prevent runtime side-effects on Node servers
+    autoRefreshToken: false,
+  },
 });
 
 /**
- * Standard utility query executor wrapper.
- * Logs query stats during development to ensure zero un-indexed lookups.
+ * 2. Backwards-Compatible Query Drop-In Replacement Wrapper.
+ * Forwards raw SQL query requests smoothly over the Supabase secure API gateway.
+ * Keeps your existing endpoint router files running without code alterations.
  */
-export const query = async (text, params) => {
+export const query = async (text, params = []) => {
   const start = Date.now();
   try {
-    const res = await pool.query(text, params);
-    
-    // Optional development logging to check execution speeds across your ballot queries
+    // Call the custom underlying remote database proxy mapping function
+    const { data, error } = await supabase.rpc('execute_sql', {
+      sql_query: text,
+      query_params: params
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    // Measure and log performance metrics automatically during development phases
     if (process.env.NODE_ENV !== 'production') {
       const duration = Date.now() - start;
-      console.log('Executed Query Stats:', { text: text.trim().split('\n')[0], duration: `${duration}ms`, rows: res.rowCount });
+      const cleanLine = text.trim().split('\n')[0];
+      console.log('Executed SDK Query Stats:', { text: cleanLine, duration: `${duration}ms`, rows: data ? data.length : 0 });
     }
-    
-    return res;
+
+    // Format response parameters to mimic exactly what raw 'pg' modules output to routes
+    return {
+      rows: data || [],
+      rowCount: data ? data.length : 0
+    };
+
   } catch (dbError) {
-    console.error('SQL Execution Fault Intercepted:', { text, message: dbError.message, code: dbError.code });
-    throw dbError; // Bubble up cleanly into your handlers' asyncHandler blocks
+    console.error('SQL Execution Fault Intercepted via SDK Subsystem:', {
+      text,
+      message: dbError.message || dbError,
+      code: dbError.code || 'UNKNOWN'
+    });
+    throw dbError; // Bubble error directly up into your routes' asyncHandler pipelines
   }
 };
