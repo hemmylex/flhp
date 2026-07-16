@@ -1,6 +1,6 @@
 // src/middleware/auth.js
 import jwt from 'jsonwebtoken';
-import ms from 'ms'; // Run: npm install ms (Utility used to parse environment text variables safely)
+import ms from 'ms'; // Utility used to parse environment text variables safely
 
 export const COOKIE_NAME = 'voteflow_token';
 
@@ -36,7 +36,8 @@ export function setAuthCookie(res, token) {
 
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true, // Absolutely mandatory to stop client-side XSS scripting token leakage
-    sameSite: isProduction ? 'strict' : 'lax', // Tighten cookie transport boundaries in production environments
+    // CRITICAL FIX: sameSite 'none' allows the browser to securely pass cookies from localhost to Render
+    sameSite: isProduction ? 'none' : 'lax', 
     secure: isProduction || process.env.COOKIE_SECURE === 'true', // Force secure HTTPS transmission natively
     maxAge: lifetime, // Dynamically matched directly to your JWT expiration threshold limits
     path: '/',
@@ -49,7 +50,8 @@ export function clearAuthCookie(res) {
   res.clearCookie(COOKIE_NAME, { 
     path: '/',
     httpOnly: true,
-    sameSite: isProduction ? 'strict' : 'lax',
+    // CRITICAL FIX: Must match option signatures exactly to successfully purge cookies from browser contexts
+    sameSite: isProduction ? 'none' : 'lax',
     secure: isProduction || process.env.COOKIE_SECURE === 'true',
   });
 }
@@ -81,5 +83,22 @@ export function requireAuth(req, res, next) {
     }
     
     return res.status(401).json({ error: 'Session credentials signature validation failed.' });
+  }
+}
+
+/**
+ * Relaxed Authentication Hook for Silent Token Renewals.
+ * Decodes expired payloads safely without triggering an immediate 401 halt.
+ */
+export function requireExpiredAuth(req, res, next) {
+  const token = req.cookies?.[COOKIE_NAME];
+  if (!token) return res.status(401).json({ error: 'Session renewal token missing.' });
+
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    req.user = { id: payload.sub, role: payload.role, email: payload.email };
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Session renewal signature verification failed.' });
   }
 }
