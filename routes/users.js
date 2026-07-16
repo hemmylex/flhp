@@ -1,3 +1,4 @@
+// src/routes/users.js
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -23,7 +24,9 @@ r.get('/', asyncHandler(async (_req, res) => {
   const { rows } = await query(
     'SELECT id, email, full_name, role, active, created_at FROM users ORDER BY created_at DESC'
   );
-  res.json(rows);
+  // Ensure we consistently send an array matrix payload down to the frontend layout
+  const formattedRows = Array.isArray(rows) ? rows : (rows ? [rows] : []);
+  res.json(formattedRows);
 }));
 
 const NewUser = z.object({
@@ -43,10 +46,12 @@ r.post('/', asyncHandler(async (req, res) => {
   const hash = await bcrypt.hash(parsed.data.password, 10);
   try {
     const { rows } = await query(
-      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id, email, full_name, role, active, created_at',
+      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, email, full_name, role, active, created_at',
       [parsed.data.email, parsed.data.fullName, hash, parsed.data.role]
     );
-    res.status(201).json(rows[0]);
+    
+    // Fixed: Read straight from the root output to avoid index evaluation errors
+    res.status(201).json(rows);
   } catch (e) {
     if (e.code === '23505') {
       return res.status(409).json({ error: 'This email identity profile has already been registered' });
@@ -70,20 +75,24 @@ r.patch('/:id/role', asyncHandler(async (req, res) => {
   const targetId = req.params.id;
   const currentAdminId = req.user.id;
 
-  // Fix 1: Administrative Safeguard. Block an active administrator from stripping their own privileges
+  // Administrative Safeguard. Block an active administrator from stripping their own privileges
   if (targetId === currentAdminId && parsed.data.role !== 'admin') {
     return res.status(403).json({ 
       error: 'Security Guard Exception: Self-demotion is restricted to prevent permanent administrative lockouts.' 
     });
   }
 
+  // Added mandatory implicit UUID typecast marker matching standard database specifications
   const { rows } = await query(
-    'UPDATE users SET role = $1 WHERE id = $2 RETURNING id, role', 
+    'UPDATE users SET role = $1 WHERE id = $2::uuid RETURNING id, role', 
     [parsed.data.role, targetId]
   );
   
-  if (rows.length === 0) return res.status(404).json({ error: 'Target user account not found' });
-  res.json(rows[0]);
+  if (!rows || (Array.isArray(rows) && rows.length === 0)) {
+    return res.status(404).json({ error: 'Target user account not found' });
+  }
+  
+  res.json(rows);
 }));
 
 // 4. Toggle Account Active Status (With Self-Deactivation Lockout Block)
@@ -101,20 +110,24 @@ r.patch('/:id/active', asyncHandler(async (req, res) => {
   const targetId = req.params.id;
   const currentAdminId = req.user.id;
 
-  // Fix 2: Administrative Safeguard. Block an active administrator from disabling themselves
+  // Administrative Safeguard. Block an active administrator from disabling themselves
   if (targetId === currentAdminId && parsed.data.active === false) {
     return res.status(403).json({ 
       error: 'Security Guard Exception: You cannot deactivate your own administrative session root profile.' 
     });
   }
 
+  // Added mandatory implicit UUID typecast marker matching standard database specifications
   const { rows } = await query(
-    'UPDATE users SET active = $1 WHERE id = $2 RETURNING id, active', 
+    'UPDATE users SET active = $1 WHERE id = $2::uuid RETURNING id, active', 
     [parsed.data.active, targetId]
   );
   
-  if (rows.length === 0) return res.status(404).json({ error: 'Target user account not found' });
-  res.json(rows[0]);
+  if (!rows || (Array.isArray(rows) && rows.length === 0)) {
+    return res.status(404).json({ error: 'Target user account not found' });
+  }
+  
+  res.json(rows);
 }));
 
 export default r;
