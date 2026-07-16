@@ -34,6 +34,10 @@ REQUIRED_ENV.forEach(variable => {
 
 const app = express();
 
+// High Priority Fix: Explicitly instruct Express to trust Render's cloud reverse proxy infrastructure layers.
+// This resolves the 'ERR_ERL_UNEXPECTED_X_FORWARDED_FOR' validation crash.
+app.set('trust proxy', 1);
+
 // 1. Deep Active Telemetry Endpoint (Placed ABOVE security layers to guarantee rapid platform pings)
 app.get('/health', async (_req, res) => {
   const start = Date.now();
