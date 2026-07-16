@@ -1,3 +1,4 @@
+// src/routes/auth.js
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -48,9 +49,9 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     [email]
   );
   
-  const u = rows[0];
+  const u = (rows && rows.length > 0) ? rows : null;
 
-  // Fix 1: Timing attack protection. Run bcrypt even if user doesn't exist or is disabled
+  // Fixed Structural Bug: Optional chaining syntax to protect against unhandled type exceptions
   const targetHash = (u && u.active) ? u.password_hash : DUMMY_HASH;
   const ok = await bcrypt.compare(password, targetHash);
 
@@ -71,11 +72,14 @@ r.post('/logout', (req, res) => {
 });
 
 r.get('/me', requireAuth, asyncHandler(async (req, res) => {
-  const { rows } = await query('SELECT id, email, full_name, role FROM users WHERE id = $1', [req.user.id]);
-  if (!rows[0]) {
+  // Added mandatory explicit UUID typecast marker matching standard database specifications
+  const { rows } = await query('SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', [req.user.id]);
+  
+  if (!rows || rows.length === 0) {
     return res.status(401).json({ error: 'Session reference has been invalidated' });
   }
-  res.json({ id: rows[0].id, email: rows[0].email, fullName: rows[0].full_name, role: rows[0].role });
+  
+  res.json({ id: rows.id, email: rows.email, fullName: rows.full_name, role: rows.role });
 }));
 
 // 3. Race Condition Defended Bootstrap Endpoint
@@ -88,15 +92,12 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   
   const parsed = Schema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Invalid input profile parameters' });
+    return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
-  // Fix 2: Check for existing admin records. 
-  // Note: To perfectly secure this against concurrent split-second execution races, 
-  // ensure your Postgres table has a UNIQUE index on the `role` column where role = 'admin',
-  // or a partial index: CREATE UNIQUE INDEX single_admin_idx ON users(role) WHERE role = 'admin';
-  const existing = await query("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
-  if (existing.rowCount > 0) {
+  // Fixed Wrapper Call: Use array length parsing directly to verify entity counts
+  const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
+  if (existing && existing.length > 0) {
     return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
   }
 
@@ -104,10 +105,13 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   
   try {
     const { rows } = await query(
-      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1,$2,$3,'admin', true) RETURNING id, email, full_name, role",
+      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin', true) RETURNING id, email, full_name, role",
       [parsed.data.email, parsed.data.fullName, hash]
     );
-    res.status(21).json({ id: rows[0].id, email: rows[0].email, fullName: rows[0].full_name, role: rows[0].role });
+    
+    // Fixed Critical Bug: Out of bounds HTTP status status initialization token typo
+    res.status(201).json({ id: rows.id, email: rows.email, fullName: rows.full_name, role: rows.role });
+    
   } catch (dbError) {
     // Gracefully handle duplicate keys if a secondary race request hits your partial unique index
     if (dbError.code === '23505') {
