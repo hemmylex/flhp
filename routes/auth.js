@@ -37,6 +37,8 @@ const LoginSchema = z.object({
 });
 
 // 2. Enhanced Login with Timing Attack Defense & Rate Limiting
+// src/routes/auth.js
+
 r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = LoginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -49,9 +51,10 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     [email]
   );
   
-  const u = (rows && rows.length > 0) ? rows : null;
+  // CRITICAL FIX: Extract the specific single row profile dictionary object from your root array context
+  const u = (rows && rows.length > 0) ? rows[0] : null;
 
-  // Fixed Structural Bug: Optional chaining syntax to protect against unhandled type exceptions
+  // Fixed Structural Bug: Guarded parameter reads utilizing standardized optional chaining checks
   const targetHash = (u && u.active) ? u.password_hash : DUMMY_HASH;
   const ok = await bcrypt.compare(password, targetHash);
 
@@ -63,6 +66,7 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const token = signToken(u);
   setAuthCookie(res, token);
   
+  // Return the fields matching your frontend auth context mappings cleanly
   res.json({ id: u.id, email: u.email, fullName: u.full_name, role: u.role });
 }));
 
@@ -75,12 +79,22 @@ r.get('/me', requireAuth, asyncHandler(async (req, res) => {
   // Added mandatory explicit UUID typecast marker matching standard database specifications
   const { rows } = await query('SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', [req.user.id]);
   
+  // CRITICAL FIX: Safely evaluate matrix length boundaries before extracting properties
   if (!rows || rows.length === 0) {
     return res.status(401).json({ error: 'Session reference has been invalidated' });
   }
   
-  res.json({ id: rows.id, email: rows.email, fullName: rows.full_name, role: rows.role });
+  // CRITICAL FIX: Unpack the row element zero index directly to prevent runtime object reading crashes
+  const currentUser = rows[0];
+  
+  res.json({ 
+    id: currentUser.id, 
+    email: currentUser.email, 
+    fullName: currentUser.full_name, 
+    role: currentUser.role 
+  });
 }));
+
 
 // 3. Race Condition Defended Bootstrap Endpoint
 r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => {
