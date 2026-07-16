@@ -4,31 +4,34 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet'; // Enforces essential automated production security headers
-import { v2 as cloudinary } from 'cloudinary';
+import rateLimit from 'express-rate-limit';
 
-import { pool } from './db/pool.js'; // Pull down pool instance cleanly to monitor lifecycles
+// Updated database abstraction bridge pattern hooking straight to your SDK file
+import { query } from './db/pool.js'; 
+const pool = {
+  query: (text, params) => query(text, params),
+  end: async () => {
+    console.log('Supabase HTTP abstraction layer mock pool disconnected safely.');
+    return Promise.resolve();
+  }
+};
+
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import electionRoutes from './routes/elections.js';
 import candidateRoutes from './routes/candidates.js';
 import notificationRoutes from './routes/notifications.js';
-import cloudinaryRoutes from './routes/cloudinary.js';
+import storageRoutes from './routes/supabase-storage.js'; // Replaced Cloudinary routing pointer
 
 // 1. Enforce strict variable verification maps upon application bootstrap
 const REQUIRED_ENV = [
-  'DATABASE_URL', 'JWT_SECRET', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'
+  'PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'
 ];
 REQUIRED_ENV.forEach(variable => {
   if (!process.env[variable]) {
     console.error(`FATAL STRUCTURAL EXCEPTION: Mandatory configuration parameter [process.env.${variable}] is missing.`);
     process.exit(1);
   }
-});
-
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 const app = express();
@@ -38,8 +41,16 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow media loads from verified domains
 }));
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '5mb' })); // Increased headroom slightly for base64/binary image buffers
 app.use(cookieParser());
+
+// Anti-bombardment layer to protect stateless database RPC methods from starvation
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, 
+  message: { error: 'Traffic volume threshold exceeded. Please try again shortly.' }
+});
+app.use('/api/', limiter);
 
 // 3. Dynamic Multi-Origin CORS Whitelist Configuration
 const allowedOrigins = [
@@ -56,12 +67,15 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
-      return callback(new Error(`Security Block: Origin [${origin}] is not authorized by CORS configuration rules.`));
+      const corsError = new Error(`Security Block: Origin [${origin}] is not authorized by CORS configuration rules.`);
+      corsError.status = 403;
+      return callback(corsError);
     }
   },
   credentials: true, // Absolutely mandatory to let browsers pass http-only JWT session cookies
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  optionsSuccessStatus: 200 // Resolves legacy browser preflight OPTIONS response drops
 }));
 
 // Basic telemetry endpoint
@@ -73,13 +87,13 @@ app.use('/api/users', userRoutes);
 app.use('/api/elections', electionRoutes);
 app.use('/api/candidates', candidateRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/cloudinary', cloudinaryRoutes);
+app.use('/api/storage', storageRoutes); // Updated routing vector mapped away from Cloudinary
 
 // 4. Robust Global Centralized Exception Interceptor Middleware
 app.use((err, _req, res, _next) => {
   console.error('CRITICAL APP FAULT INTERCEPTED:', err.stack || err);
   
-  // Mask underlying system logs (like raw SQL query printouts) to shield server details
+  // Mask underlying system logs to shield server details
   const isProduction = process.env.NODE_ENV === 'production';
   const responseMessage = isProduction 
     ? 'A secure core infrastructure execution fault occurred.' 
@@ -94,11 +108,11 @@ app.use((err, _req, res, _next) => {
 const port = process.env.PORT || 4000;
 const server = app.listen(port, async () => {
   console.log(`=======================================================`);
-  console.log(` VoteFlow Secure Core Core Engine Engine Active`);
+  console.log(` VoteFlow Secure Core Engine Active [Supabase SDK Mode]`);
   console.log(` Local Network Endpoint Target: http://localhost:${port}`);
   console.log(` Environment Context Mode Mapping: ${process.env.NODE_ENV || 'development'}`);
   
-  // Highlighted Fix: Explicit database connectivity handshake test
+  // Handshake test over the REST interface wrapper
   try {
     const start = Date.now();
     await pool.query('SELECT NOW()');
@@ -122,13 +136,19 @@ const server = app.listen(port, async () => {
 const closeSystemGracefully = async (signal) => {
   console.log(`\nIntercepted closing signal [${signal}]. Launching secure shutdown operations...`);
   
+  // Force a hard termination if active requests prevent a graceful exit
+  setTimeout(() => {
+    console.error('Forcefully terminating process: Graceful shutdown timed out.');
+    process.exit(1);
+  }, 10000);
+
   // Stop receiving any incoming HTTP server tracking threads immediately
   server.close(async () => {
     console.log('HTTP network interface safely locked out.');
     try {
-      // Disconnect connections inside the active postgres client pool
+      // Safely triggers our custom SDK mock end-routine
       await pool.end();
-      console.log('Database connection pool successfully disconnected.');
+      console.log('Database abstraction layer successfully disconnected.');
       process.exit(0);
     } catch (dbCloseError) {
       console.error('Error encountered while closing the database client pool connection socket:', dbCloseError);
@@ -139,3 +159,9 @@ const closeSystemGracefully = async (signal) => {
 
 process.on('SIGTERM', () => closeSystemGracefully('SIGTERM'));
 process.on('SIGINT', () => closeSystemGracefully('SIGINT'));
+
+// Intercept unexpected promise rejections to prevent silent data drop crashes
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED PROMISE REJECTION ENCOUNTERED:', reason);
+  closeSystemGracefully('UNHANDLED_REJECTION');
+});
