@@ -104,13 +104,21 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12); // Upped work factor slightly for administrative profiles
   
   try {
+    // High Priority Fix: Explicitly typecast $4 to boolean since query variables pass as strings through the text[] array
     const { rows } = await query(
-      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin', true) RETURNING id, email, full_name, role",
-      [parsed.data.email, parsed.data.fullName, hash]
+      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin', $4::boolean) RETURNING id, email, full_name, role",
+      [parsed.data.email, parsed.data.fullName, hash, "true"]
     );
     
-    // Fixed Critical Bug: Out of bounds HTTP status status initialization token typo
-    res.status(201).json({ id: rows.id, email: rows.email, fullName: rows.full_name, role: rows.role });
+    // Fixed Critical Bug: Access properties from index [0] to protect against undefined key payload crashes
+    const createdUser = rows[0];
+    
+    res.status(201).json({ 
+      id: createdUser.id, 
+      email: createdUser.email, 
+      fullName: createdUser.full_name, 
+      role: createdUser.role 
+    });
     
   } catch (dbError) {
     // Gracefully handle duplicate keys if a secondary race request hits your partial unique index
@@ -120,5 +128,6 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     throw dbError; // Forward other unhandled database errors to your global app middleware
   }
 }));
+
 
 export default r;
