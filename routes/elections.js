@@ -1,3 +1,4 @@
+// src/routes/elections.js
 import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../db/pool.js';
@@ -12,7 +13,7 @@ const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-// 1. Enhanced Master Index: Flattened subqueries into high-speed relational joins
+// 1. Enhanced Master Index: Bypassed massive Cartesian products using high-speed relational subqueries
 r.get('/', asyncHandler(async (_req, res) => {
   const { rows } = await query(`
     SELECT 
@@ -22,20 +23,17 @@ r.get('/', asyncHandler(async (_req, res) => {
       e.starts_at, 
       e.ends_at, 
       e.created_by,
-      COALESCE(COUNT(DISTINCT c.id), 0)::int AS candidate_count,
-      COALESCE(COUNT(DISTINCT v.id), 0)::int AS vote_count
+      (SELECT COALESCE(COUNT(*), 0)::int FROM candidates c WHERE c.election_id = e.id) AS candidate_count,
+      (SELECT COALESCE(COUNT(*), 0)::int FROM votes v WHERE v.election_id = e.id) AS vote_count
     FROM elections e
-    LEFT JOIN candidates c ON c.election_id = e.id
-    LEFT JOIN votes v ON v.election_id = e.id
-    GROUP BY e.id
     ORDER BY e.starts_at DESC
   `);
   res.json(rows);
 }));
 
 r.get('/:id', asyncHandler(async (req, res) => {
-  const { rows } = await query('SELECT * FROM elections WHERE id = $1', [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error: 'Election record not found' });
+  const { rows } = await query('SELECT * FROM elections WHERE id = $1::uuid', [req.params.id]);
+  if (!rows || !rows[0]) return res.status(404).json({ error: 'Election record not found' });
   res.json(rows[0]);
 }));
 
@@ -58,45 +56,46 @@ r.post('/', requireRole('admin', 'organizer'), asyncHandler(async (req, res) => 
   
   const { title, description, startsAt, endsAt } = parsed.data;
   const { rows } = await query(
-    'INSERT INTO elections (title, description, starts_at, ends_at, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    'INSERT INTO elections (title, description, starts_at, ends_at, created_by) VALUES ($1, $2, $3::timestamp, $4::timestamp, $5::uuid) RETURNING *',
     [title, description ?? null, startsAt, endsAt, req.user.id]
   );
   res.status(201).json(rows[0]);
 }));
 
-// 3. Robust Delete Guard: Wrapped data purge routines into isolated transactions
+// 3. Robust Delete Guard: Wrapped data purge routines into an atomic multi-table execution block 
 r.delete('/:id', requireRole('admin', 'organizer'), asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  const check = await query('SELECT 1 FROM elections WHERE id = $1', [id]);
-  if (check.rowCount === 0) {
-    return res.status(404).json({ error: 'Election profile not found' });
+  // Single-statement atomic layout using CTEs to ensure structural isolation over REST
+  const { rows } = await query(`
+    WITH target_election AS (
+      SELECT id FROM elections WHERE id = $1::uuid
+    ),
+    del_votes AS (
+      DELETE FROM votes WHERE election_id IN (SELECT id FROM target_election)
+    ),
+    del_candidates AS (
+      DELETE FROM candidates WHERE election_id IN (SELECT id FROM target_election)
+    )
+    DELETE FROM elections WHERE id IN (SELECT id FROM target_election) RETURNING id;
+  `, [id]);
+
+  if (!rows || rows.length === 0) {
+    return res.status(404).json({ error: 'Election profile not found or already deleted' });
   }
 
-  await query('BEGIN');
-  try {
-    // Manually clean up relational associations sequentially to prevent constraint faults
-    await query('DELETE FROM votes WHERE election_id = $1', [id]);
-    await query('DELETE FROM candidates WHERE election_id = $1', [id]);
-    await query('DELETE FROM elections WHERE id = $1', [id]);
-    
-    await query('COMMIT');
-    res.json({ ok: true, message: "Election cluster safely purged from systems" });
-  } catch (err) {
-    await query('ROLLBACK');
-    throw err;
-  }
+  res.json({ ok: true, message: "Election cluster safely purged from systems" });
 }));
 
 // Candidates nested under election
 r.get('/:id/candidates', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const check = await query('SELECT 1 FROM elections WHERE id = $1', [id]);
-  if (check.rowCount === 0) {
+  const check = await query('SELECT 1 FROM elections WHERE id = $1::uuid', [id]);
+  if (!check || check.rowCount === 0) {
     return res.status(404).json({ error: 'Election wrapper does not exist' });
   }
 
-  const { rows } = await query('SELECT * FROM candidates WHERE election_id = $1 ORDER BY created_at', [id]);
+  const { rows } = await query('SELECT * FROM candidates WHERE election_id = $1::uuid ORDER BY created_at', [id]);
   res.json(rows);
 }));
 
@@ -112,8 +111,8 @@ r.post('/:id/candidates', requireRole('admin', 'organizer'), asyncHandler(async 
   const { id } = req.params;
   
   // Guard clause: Ensure target election context exists before pushing child candidacies
-  const electionCheck = await query('SELECT starts_at FROM elections WHERE id = $1', [id]);
-  if (electionCheck.rowCount === 0) {
+  const electionCheck = await query('SELECT starts_at FROM elections WHERE id = $1::uuid', [id]);
+  if (!electionCheck || electionCheck.rowCount === 0) {
     return res.status(404).json({ error: 'Cannot append candidates to a missing election' });
   }
 
@@ -124,15 +123,13 @@ r.post('/:id/candidates', requireRole('admin', 'organizer'), asyncHandler(async 
   
   const { fullName, party, bio, photoUrl, photoPublicId } = parsed.data;
   const { rows } = await query(
-    'INSERT INTO candidates (election_id, full_name, party, bio, photo_url, photo_public_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    'INSERT INTO candidates (election_id, full_name, party, bio, photo_url, photo_public_id) VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING *',
     [id, fullName, party ?? null, bio ?? null, photoUrl || null, photoPublicId ?? null]
   );
   res.status(201).json(rows[0]);
 }));
 
-
-
-// Enhanced Secure Vote Casting (Defended Against Multi-Election Tampering)
+// Enhanced Secure Vote Casting (Defended Against Multi-Election Tampering and Stateless RPC constraints)
 r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
   const parsed = z.object({ candidateId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) {
@@ -143,67 +140,49 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
   const voterId = req.user.id;
   const { candidateId } = parsed.data;
 
-  // Open an explicit atomic isolation database transaction block
-  await query('BEGIN');
-  
   try {
-    // A. Verify target election context presence alongside time bounds validation
-    const { rows: erows } = await query(
-      'SELECT starts_at, ends_at FROM elections WHERE id = $1 FOR SHARE', 
-      [electionId]
-    );
-    const e = erows[0];
-    if (!e) {
-      await query('ROLLBACK');
+    // Single consolidated validation matrix query to handle cross-dependencies safely in one database trip
+    const { rows: validateRows } = await query(`
+      SELECT 
+        e.starts_at, e.ends_at,
+        EXISTS(SELECT 1 FROM candidates c WHERE c.id = $1::uuid AND c.election_id = $2::uuid) AS valid_candidate,
+        EXISTS(SELECT 1 FROM votes v WHERE v.election_id = $2::uuid AND v.voter_id = $3::uuid) AS already_voted
+      FROM elections e WHERE e.id = $2::uuid
+    `, [candidateId, electionId, voterId]);
+
+    if (!validateRows || validateRows.length === 0) {
       return res.status(404).json({ error: 'Target election registry instance not found' });
     }
 
+    const context = validateRows[0];
     const now = new Date();
-    if (now < new Date(e.starts_at)) {
-      await query('ROLLBACK');
+
+    if (now < new Date(context.starts_at)) {
       return res.status(400).json({ error: 'The voting window for this election has not opened yet' });
     }
-    if (now > new Date(e.ends_at)) {
-      await query('ROLLBACK');
+    if (now > new Date(context.ends_at)) {
       return res.status(400).json({ error: 'The voting window for this election has officially closed' });
     }
-
-    // B. Critical Security Enhancement: Ensure candidate actually belongs to this specific election
-    const { rows: crows } = await query(
-      'SELECT 1 FROM candidates WHERE id = $1 AND election_id = $2',
-      [candidateId, electionId]
-    );
-    if (crows.length === 0) {
-      await query('ROLLBACK');
+    if (!context.valid_candidate) {
       return res.status(400).json({ error: 'Security Exception: Candidate selection does not exist inside this ballot' });
     }
-
-    // C. Concurrency Guard: Explicit transactional verify to check if voter has already cast a ballot
-    const { rows: vrows } = await query(
-      'SELECT 1 FROM votes WHERE election_id = $1 AND voter_id = $2 FOR UPDATE',
-      [electionId, voterId]
-    );
-    if (vrows.length > 0) {
-      await query('ROLLBACK');
+    if (context.already_voted) {
       return res.status(409).json({ error: 'You have already recorded a vote within this election' });
     }
 
-    // D. Safe record insert operations execution
+    // Atomic Insertion Step
     const { rows } = await query(
-      'INSERT INTO votes (election_id, candidate_id, voter_id) VALUES ($1,$2,$3) RETURNING id, created_at',
+      'INSERT INTO votes (election_id, candidate_id, voter_id) VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id, created_at',
       [electionId, candidateId, voterId]
     );
     
-    await query('COMMIT');
     res.status(201).json({ ok: true, ballotReceipt: rows[0].id });
 
   } catch (err) {
-    await query('ROLLBACK');
-    // Fallback handler for unique table constraint index collision definitions
     if (err.code === '23505') {
       return res.status(409).json({ error: 'You have already recorded a vote within this election' });
     }
-    throw err; // Bubbles up to global Express logger
+    throw err; 
   }
 }));
 
@@ -212,8 +191,8 @@ r.get('/:id/results', asyncHandler(async (req, res) => {
   const electionId = req.params.id;
 
   // Verify that the election exists first to avoid returning empty matrices for wrong URLs
-  const electionCheck = await query('SELECT title FROM elections WHERE id = $1', [electionId]);
-  if (electionCheck.rowCount === 0) {
+  const electionCheck = await query('SELECT title FROM elections WHERE id = $1::uuid', [electionId]);
+  if (!electionCheck || electionCheck.rowCount === 0) {
     return res.status(404).json({ error: 'Target election parameters not found' });
   }
 
@@ -226,14 +205,14 @@ r.get('/:id/results', asyncHandler(async (req, res) => {
       c.photo_url,
       COALESCE(COUNT(v.id), 0)::int AS votes
     FROM candidates c
-    LEFT JOIN votes v ON v.candidate_id = c.id AND v.election_id = $1
-    WHERE c.election_id = $1
+    LEFT JOIN votes v ON v.candidate_id = c.id AND v.election_id = $1::uuid
+    WHERE c.election_id = $1::uuid
     GROUP BY c.id 
     ORDER BY votes DESC`, 
     [electionId]
   );
 
-  const total = rows.reduce((acc, row) => acc + row.votes, 0);
+  const total = rows.reduce((acc, row) => acc + Number(row.votes || 0), 0);
   
   // Format percentage distributions smoothly for charts
   const candidatesWithMetrics = rows.map(r => ({
@@ -252,4 +231,50 @@ r.get('/:id/results', asyncHandler(async (req, res) => {
   });
 }));
 
+// Enhanced High-Speed Real-Time Live Results Engine
+r.get('/:id/results', asyncHandler(async (req, res) => {
+  const electionId = req.params.id;
+
+  // 1. Verify that the election exists first using accurate root array tracking
+  const { rows: electionCheck } = await query('SELECT title FROM elections WHERE id = $1::uuid', [electionId]);
+  
+  if (!electionCheck || electionCheck.length === 0) {
+    return res.status(404).json({ error: 'Target election parameters not found' });
+  }
+
+  // 2. Optimized aggregate compilation utilizing fast isolated scalar subqueries
+  const { rows } = await query(`
+    SELECT 
+      c.id, 
+      c.full_name, 
+      c.party, 
+      c.photo_url,
+      (SELECT COALESCE(COUNT(*), 0)::int FROM votes v WHERE v.candidate_id = c.id AND v.election_id = $1::uuid) AS votes
+    FROM candidates c
+    WHERE c.election_id = $1::uuid
+    ORDER BY votes DESC`, 
+    [electionId]
+  );
+
+  // 3. Enforce mathematical number type mapping to eliminate string concatenation bugs
+  const total = rows.reduce((acc, row) => acc + Number(row.votes || 0), 0);
+  
+  // 4. Format percentage distributions smoothly for charts
+  const candidatesWithMetrics = rows.map(r => ({
+    id: r.id,
+    full_name: r.full_name,
+    party: r.party,
+    photo_url: r.photo_url,
+    votes: Number(r.votes || 0),
+    pct: total > 0 ? Number(((Number(r.votes) / total) * 100).toFixed(4)) : 0
+  }));
+
+  res.json({ 
+    electionTitle: electionCheck[0].title,
+    total, 
+    candidates: candidatesWithMetrics 
+  });
+}));
+
 export default r;
+
