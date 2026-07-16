@@ -2,43 +2,37 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import rateLimit from 'express-rate-limit'; // Enforces brute-force threshold constraints
+import rateLimit from 'express-rate-limit'; 
 import { query } from '../db/pool.js';
 import { signToken, setAuthCookie, clearAuthCookie, requireAuth } from '../middleware/auth.js';
 
 const r = Router();
-
-// A generic dummy hash matching standard production salts used to prevent timing signature leakage
 const DUMMY_HASH = '$2a$10$Xk7fR5Bw9ZlQyO2mN3p4qO.e7w5tY3u8v9w0x1y2z3A4B5C6D7E8F';
 
-// 1. Configure specialized security rate-limiting bounds
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes window
-  max: 5, // Limit each IP address to 5 failed login attempts per window
+  windowMs: 15 * 60 * 1000, 
+  max: 5, 
   message: { error: 'Too many authentication attempts. Please try again in 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const bootstrapLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour window
-  max: 3, // Highly restrictive endpoint protection
+  windowMs: 60 * 60 * 1000, 
+  max: 3, 
   message: { error: 'Request threshold exceeded for system initialization blocks.' },
 });
 
-// Asynchronous route handler wrapper to forward unexpected database errors safely to the Express boundary
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
 const LoginSchema = z.object({ 
-  email: z.string().email().toLowerCase().trim(), // Force data formatting consistency
+  email: z.string().email().toLowerCase().trim(), 
   password: z.string().min(1) 
 });
 
-// 2. Enhanced Login with Timing Attack Defense & Rate Limiting
-// src/routes/auth.js
-
+// 1. Fixed Login Implementation Unpacking Arrays Safely
 r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = LoginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -51,22 +45,20 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     [email]
   );
   
-  // CRITICAL FIX: Extract the specific single row profile dictionary object from your root array context
+  // CRITICAL FIX: Extract the specific single row profile dictionary object from the array
   const u = (rows && rows.length > 0) ? rows[0] : null;
 
-  // Fixed Structural Bug: Guarded parameter reads utilizing standardized optional chaining checks
   const targetHash = (u && u.active) ? u.password_hash : DUMMY_HASH;
   const ok = await bcrypt.compare(password, targetHash);
 
-  // Fail safely with generic, non-descriptive error text to mask database entity states
   if (!u || !u.active || !ok) {
     return res.status(401).json({ error: 'Invalid email or password credentials' });
   }
 
+  // Pass the unwrapped user object dictionary context into the token payload generator
   const token = signToken(u);
   setAuthCookie(res, token);
   
-  // Return the fields matching your frontend auth context mappings cleanly
   res.json({ id: u.id, email: u.email, fullName: u.full_name, role: u.role });
 }));
 
@@ -75,16 +67,15 @@ r.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+// 2. Fixed Session State Profile Verification Handler
 r.get('/me', requireAuth, asyncHandler(async (req, res) => {
-  // Added mandatory explicit UUID typecast marker matching standard database specifications
   const { rows } = await query('SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', [req.user.id]);
   
-  // CRITICAL FIX: Safely evaluate matrix length boundaries before extracting properties
   if (!rows || rows.length === 0) {
     return res.status(401).json({ error: 'Session reference has been invalidated' });
   }
   
-  // CRITICAL FIX: Unpack the row element zero index directly to prevent runtime object reading crashes
+  // CRITICAL FIX: Unpack zero index object properties to protect against layout tree crashes
   const currentUser = rows[0];
   
   res.json({ 
@@ -95,8 +86,7 @@ r.get('/me', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-
-// 3. Race Condition Defended Bootstrap Endpoint
+// 3. Fixed System Bootstrapping Endpoint
 r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => {
   const Schema = z.object({ 
     email: z.string().email().toLowerCase().trim(), 
@@ -109,39 +99,34 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
-  // Fixed Wrapper Call: Use array length parsing directly to verify entity counts
   const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
   if (existing && existing.length > 0) {
     return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
   }
 
-  const hash = await bcrypt.hash(parsed.data.password, 12); // Upped work factor slightly for administrative profiles
+  const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
-    // High Priority Fix: Explicitly typecast $4 to boolean since query variables pass as strings through the text[] array
     const { rows } = await query(
       "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin', $4::boolean) RETURNING id, email, full_name, role",
       [parsed.data.email, parsed.data.fullName, hash, "true"]
     );
     
-    // Fixed Critical Bug: Access properties from index [0] to protect against undefined key payload crashes
-    const createdUser = rows[0];
+    // CRITICAL FIX: Unpack the newly created admin account zero index record row flatly
+    const createdAdmin = rows[0];
     
     res.status(201).json({ 
-      id: createdUser.id, 
-      email: createdUser.email, 
-      fullName: createdUser.full_name, 
-      role: createdUser.role 
+      id: createdAdmin.id, 
+      email: createdAdmin.email, 
+      fullName: createdAdmin.full_name, 
+      role: createdAdmin.role 
     });
-    
   } catch (dbError) {
-    // Gracefully handle duplicate keys if a secondary race request hits your partial unique index
     if (dbError.code === '23505') {
       return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
     }
-    throw dbError; // Forward other unhandled database errors to your global app middleware
+    throw dbError; 
   }
 }));
-
 
 export default r;
