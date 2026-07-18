@@ -9,6 +9,8 @@ import { signToken, setAuthCookie, clearAuthCookie, requireAuth } from '../middl
 const r = Router();
 const DUMMY_HASH = '$2a$10$Xk7fR5Bw9ZlQyO2mN3p4qO.e7w5tY3u8v9w0x1y2z3A4B5C6D7E8F';
 
+const allowedRoles = ['admin', 'voter', 'organizer'];
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 5, 
@@ -116,7 +118,6 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
-    // Insert new admin with proper enum and boolean casting
     const { rows } = await query(
       `INSERT INTO users (id, email, full_name, password_hash, role, active, created_at)
        VALUES (gen_random_uuid(), $1, $2, $3, 'admin'::app_role, $4::boolean, now())
@@ -141,6 +142,70 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     }
     throw dbError; 
   }
+}));
+
+// 5. General User Creation
+r.post('/users', asyncHandler(async (req, res) => {
+  const Schema = z.object({
+    email: z.string().email().toLowerCase().trim(),
+    password: z.string().min(8),
+    fullName: z.string().min(1),
+    role: z.enum(['admin','voter','organizer'])
+  });
+  const parsed = Schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid parameters' });
+
+  const { email, password, fullName, role } = parsed.data;
+  const hash = await bcrypt.hash(password, 12);
+
+  const { rows } = await query(
+    `INSERT INTO users (id, email, full_name, password_hash, role, active, created_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4::app_role, true, now())
+     RETURNING id, email, full_name, role, active, created_at`,
+    [email, fullName, hash, role]
+  );
+
+  res.status(201).json(rows[0]);
+}));
+
+// 6. List Users
+r.get('/users', asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    'SELECT id, email, full_name, role, active, created_at FROM users ORDER BY created_at DESC'
+  );
+  res.json(rows);
+}));
+
+// 7. Update Role
+r.patch('/users/:id/role', asyncHandler(async (req, res) => {
+  const Schema = z.object({ role: z.enum(['admin','voter','organizer']) });
+  const parsed = Schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid role' });
+
+  const { role } = parsed.data;
+  const { rows } = await query(
+    `UPDATE users SET role = $2::app_role WHERE id = $1::uuid RETURNING id, email, full_name, role, active`,
+    [req.params.id, role]
+  );
+
+  if (!rows || rows.length === 0) return res.status(404).json({ error: 'User not found' });
+  res.json(rows[0]);
+}));
+
+// 8. Toggle Active
+r.patch('/users/:id/active', asyncHandler(async (req, res) => {
+  const Schema = z.object({ active: z.boolean() });
+  const parsed = Schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid active flag' });
+
+  const { active } = parsed.data;
+  const { rows } = await query(
+    `UPDATE users SET active = $2::boolean WHERE id = $1::uuid RETURNING id, email, full_name, role, active`,
+    [req.params.id, active]
+  );
+
+  if (!rows || rows.length === 0) return res.status(404).json({ error: 'User not found' });
+  res.json(rows[0]);
 }));
 
 export default r;
