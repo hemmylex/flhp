@@ -16,13 +16,13 @@ export const requireRole = (...allowedRoles) => {
     }
 
     try {
-      // 2. Real-Time Security Guard: Added explicit UUID typecast marker matching standard database specifications
+      // 2. Real-Time Security Guard: Cast your ENUM column to ::text to ensure clean string conversion over proxy gateways
       const { rows } = await query(
-        'SELECT role, active FROM users WHERE id = $1::uuid', 
+        'SELECT role::text, active FROM users WHERE id = $1::uuid', 
         [req.user.id]
       );
       
-      // Fixed: Extract the specific single row profile dictionary object from your root array context cleanly
+      // Extract the specific single row profile dictionary object from your root array context cleanly
       const liveUser = (rows && rows.length > 0) ? rows[0] : null;
 
       // Block access instantly if an administrator disabled the account mid-session
@@ -33,7 +33,7 @@ export const requireRole = (...allowedRoles) => {
       // Synchronize the request context user profile metadata with real-time database state variables
       req.user.role = liveUser.role;
 
-      // 3. Strict Deterministic Access Verification (Eliminated loose numerical hierarchy overrides)
+      // 3. Strict Deterministic Access Verification
       const hasAccess = targets.includes(req.user.role);
 
       if (!hasAccess) {
