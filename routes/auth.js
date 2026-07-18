@@ -129,4 +129,28 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   }
 }));
 
+// Register New User Account (Handles Voter and Organizer Dynamic Casts)
+r.post('/', asyncHandler(async (req, res) => {
+  const parsed = NewUser.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues?.message || 'Invalid input parameters' });
+  }
+  
+  const hash = await bcrypt.hash(parsed.data.password, 10);
+  try {
+    // CRITICAL FIX: Explicitly append the custom ENUM typecast modifier operator ($4::app_role)
+    const { rows } = await query(
+      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1, $2, $3, $4::app_role) RETURNING id, email, full_name, role, active, created_at',
+      [parsed.data.email, parsed.data.fullName, hash, parsed.data.role]
+    );
+    
+    res.status(201).json(rows);
+  } catch (e) {
+    if (e.code === '23505') {
+      return res.status(409).json({ error: 'This email identity profile has already been registered' });
+    }
+    throw e;
+  }
+}));
+
 export default r;
