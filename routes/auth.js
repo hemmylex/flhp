@@ -32,7 +32,7 @@ const LoginSchema = z.object({
   password: z.string().min(1) 
 });
 
-// 1. Mobile Fallback Compliant Login Route Handler
+// 1. Login Route
 r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = LoginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -45,8 +45,7 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     [email]
   );
   
-  const u = (rows && rows.length > 0) ? rows[0] : null;
-
+  const u = rows?.[0] || null;
   const targetHash = (u && u.active) ? u.password_hash : DUMMY_HASH;
   const ok = await bcrypt.compare(password, targetHash);
 
@@ -54,11 +53,9 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     return res.status(401).json({ error: 'Invalid email or password credentials' });
   }
 
-  // Generate the unified signature token string
   const token = signToken(u);
   setAuthCookie(res, token);
   
-  // High Priority Patch: Return token property explicitly inside JSON body for mobile storage capture
   res.json({ 
     id: u.id, 
     email: u.email, 
@@ -68,14 +65,18 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   });
 }));
 
+// 2. Logout Route
 r.post('/logout', (req, res) => {
   clearAuthCookie(res);
   res.json({ ok: true });
 });
 
-// 2. Dual-Channel Session State Profile Verification Handler
+// 3. Session Verification
 r.get('/me', requireAuth, asyncHandler(async (req, res) => {
-  const { rows } = await query('SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', [req.user.id]);
+  const { rows } = await query(
+    'SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', 
+    [req.user.id]
+  );
   
   if (!rows || rows.length === 0) {
     return res.status(401).json({ error: 'Session reference has been invalidated' });
@@ -91,7 +92,7 @@ r.get('/me', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-// 3. Fixed System Bootstrapping Endpoint with Typecasting and Fallback Tokens
+// 4. First Admin Bootstrapping
 r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => {
   const Schema = z.object({ 
     email: z.string().email().toLowerCase().trim(), 
@@ -104,8 +105,9 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid parameters' });
   }
 
-  // Explicitly cast custom ENUM type target comparison to avoid 42804 database rejections
-  const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin'::app_role LIMIT 1");
+  const { rows: existing } = await query(
+    "SELECT 1 FROM users WHERE role = 'admin'::app_role LIMIT 1"
+  );
   if (existing && existing.length > 0) {
     return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
   }
@@ -113,17 +115,15 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
-    // Explicitly apply custom enum ('admin'::app_role) and boolean ($4::boolean) casting rules
     const { rows } = await query(
-      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin'::app_role, $4::boolean) RETURNING id, email, full_name, role",
-      [parsed.data.email, parsed.data.fullName, hash, "true"]
+      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin'::app_role, $4::boolean) RETURNING id, email, full_name, role, active",
+      [parsed.data.email, parsed.data.fullName, hash, true] // pass actual boolean
     );
     
     const createdAdmin = rows[0];
     const token = signToken(createdAdmin);
     setAuthCookie(res, token);
     
-    // Provide explicit fallback token parameter to administrative setup threads
     res.status(201).json({ 
       id: createdAdmin.id, 
       email: createdAdmin.email, 
