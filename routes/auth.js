@@ -32,7 +32,7 @@ const LoginSchema = z.object({
   password: z.string().min(1) 
 });
 
-// 1. Fixed Login Implementation Unpacking Arrays Safely
+// 1. Fixed Login Implementation Unpacking Arrays Safely Across All Roles
 r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = LoginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -45,7 +45,7 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     [email]
   );
   
-  // CRITICAL FIX: Extract the specific single row profile dictionary object from the array
+  // Extract the specific single row profile dictionary object from the array context cleanly
   const u = (rows && rows.length > 0) ? rows[0] : null;
 
   const targetHash = (u && u.active) ? u.password_hash : DUMMY_HASH;
@@ -75,7 +75,6 @@ r.get('/me', requireAuth, asyncHandler(async (req, res) => {
     return res.status(401).json({ error: 'Session reference has been invalidated' });
   }
   
-  // CRITICAL FIX: Unpack zero index object properties to protect against layout tree crashes
   const currentUser = rows[0];
   
   res.json({ 
@@ -99,7 +98,8 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
-  const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
+  // Fix: Added explicit ::app_role conversion cast to verify static string conditions safely
+  const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin'::app_role LIMIT 1");
   if (existing && existing.length > 0) {
     return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
   }
@@ -107,12 +107,12 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
+    // Fix: Appended explicit 'admin'::app_role casting operator to conform with custom ENUM column constraints
     const { rows } = await query(
-      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin', $4::boolean) RETURNING id, email, full_name, role",
+      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin'::app_role, $4::boolean) RETURNING id, email, full_name, role",
       [parsed.data.email, parsed.data.fullName, hash, "true"]
     );
     
-    // CRITICAL FIX: Unpack the newly created admin account zero index record row flatly
     const createdAdmin = rows[0];
     
     res.status(201).json({ 
@@ -126,30 +126,6 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
       return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
     }
     throw dbError; 
-  }
-}));
-
-// Register New User Account (Handles Voter and Organizer Dynamic Casts)
-r.post('/', asyncHandler(async (req, res) => {
-  const parsed = NewUser.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.issues?.message || 'Invalid input parameters' });
-  }
-  
-  const hash = await bcrypt.hash(parsed.data.password, 10);
-  try {
-    // CRITICAL FIX: Explicitly append the custom ENUM typecast modifier operator ($4::app_role)
-    const { rows } = await query(
-      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1, $2, $3, $4::app_role) RETURNING id, email, full_name, role, active, created_at',
-      [parsed.data.email, parsed.data.fullName, hash, parsed.data.role]
-    );
-    
-    res.status(201).json(rows);
-  } catch (e) {
-    if (e.code === '23505') {
-      return res.status(409).json({ error: 'This email identity profile has already been registered' });
-    }
-    throw e;
   }
 }));
 
