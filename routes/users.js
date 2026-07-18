@@ -22,7 +22,7 @@ const IdParamSchema = z.object({
 // 1. Fetch complete system registry index
 r.get('/', asyncHandler(async (_req, res) => {
   const { rows } = await query(
-    'SELECT id, email, full_name, role, active, created_at FROM users ORDER BY created_at DESC'
+    'SELECT id, email, full_name, role::text, active, created_at FROM users ORDER BY created_at DESC'
   );
   // Ensure we consistently send an array matrix payload down to the frontend layout
   const formattedRows = Array.isArray(rows) ? rows : (rows ? [rows] : []);
@@ -45,12 +45,12 @@ r.post('/', asyncHandler(async (req, res) => {
   
   const hash = await bcrypt.hash(parsed.data.password, 10);
   try {
+    // CRITICAL FIX: Explicitly apply the custom app_role typecast operator string ($4::app_role)
     const { rows } = await query(
-      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, email, full_name, role, active, created_at',
+      'INSERT INTO users (email, full_name, password_hash, role) VALUES ($1, $2, $3, $4::app_role) RETURNING id, email, full_name, role::text, active, created_at',
       [parsed.data.email, parsed.data.fullName, hash, parsed.data.role]
     );
     
-    // Fixed: Read straight from the root output to avoid index evaluation errors
     res.status(201).json(rows);
   } catch (e) {
     if (e.code === '23505') {
@@ -82,9 +82,9 @@ r.patch('/:id/role', asyncHandler(async (req, res) => {
     });
   }
 
-  // Added mandatory implicit UUID typecast marker matching standard database specifications
+  // CRITICAL FIX: Appended direct ::app_role type conversion modifier matching database specifications
   const { rows } = await query(
-    'UPDATE users SET role = $1 WHERE id = $2::uuid RETURNING id, role', 
+    'UPDATE users SET role = $1::app_role WHERE id = $2::uuid RETURNING id, role::text', 
     [parsed.data.role, targetId]
   );
   
@@ -117,10 +117,10 @@ r.patch('/:id/active', asyncHandler(async (req, res) => {
     });
   }
 
-  // Added mandatory implicit UUID typecast marker matching standard database specifications
+  // CRITICAL FIX: Force explicit boolean evaluation mapping ($1::boolean) over our stringified parameter inputs
   const { rows } = await query(
-    'UPDATE users SET active = $1 WHERE id = $2::uuid RETURNING id, active', 
-    [parsed.data.active, targetId]
+    'UPDATE users SET active = $1::boolean WHERE id = $2::uuid RETURNING id, active', 
+    [String(parsed.data.active), targetId]
   );
   
   if (!rows || (Array.isArray(rows) && rows.length === 0)) {
