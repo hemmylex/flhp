@@ -131,58 +131,128 @@ r.post('/:id/candidates', requireRole('admin', 'organizer'), asyncHandler(async 
 
 // Enhanced Secure Vote Casting (Defended Against Multi-Election Tampering and Stateless RPC constraints)
 r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
-  const parsed = z.object({ candidateId: z.string().uuid() }).safeParse(req.body);
+  const parsed = z.object({
+    candidateId: z.string().uuid()
+  }).safeParse(req.body);
+
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Invalid payload input structure' });
+    return res.status(400).json({
+      error: 'Invalid payload input structure'
+    });
   }
-  
+
   const electionId = req.params.id;
   const voterId = req.user.id;
   const { candidateId } = parsed.data;
 
-  try {
-    // Single consolidated validation matrix query to handle cross-dependencies safely in one database trip
-    const { rows: validateRows } = await query(`
-      SELECT 
-        e.starts_at, e.ends_at,
-        EXISTS(SELECT 1 FROM candidates c WHERE c.id = $1::uuid AND c.election_id = $2::uuid) AS valid_candidate,
-        EXISTS(SELECT 1 FROM votes v WHERE v.election_id = $2::uuid AND v.voter_id = $3::uuid) AS already_voted
-      FROM elections e WHERE e.id = $2::uuid
-    `, [candidateId, electionId, voterId]);
+  await query('BEGIN');
 
-    if (!validateRows || validateRows.length === 0) {
-      return res.status(404).json({ error: 'Target election registry instance not found' });
+  try {
+    // Validate election, voter and candidate
+    const { rows } = await query(
+      `
+      SELECT
+        e.starts_at,
+        e.ends_at,
+        u.active,
+        EXISTS (
+          SELECT 1
+          FROM candidates c
+          WHERE c.id = $1::uuid
+            AND c.election_id = $2::uuid
+        ) AS valid_candidate
+      FROM elections e
+      JOIN users u
+        ON u.id = $3::uuid
+      WHERE e.id = $2::uuid
+      `,
+      [candidateId, electionId, voterId]
+    );
+
+    if (rows.length === 0) {
+      await query('ROLLBACK');
+      return res.status(404).json({
+        error: 'Election not found'
+      });
     }
 
-    const context = validateRows[0];
+    const ctx = rows[0];
     const now = new Date();
 
-    if (now < new Date(context.starts_at)) {
-      return res.status(400).json({ error: 'The voting window for this election has not opened yet' });
-    }
-    if (now > new Date(context.ends_at)) {
-      return res.status(400).json({ error: 'The voting window for this election has officially closed' });
-    }
-    if (!context.valid_candidate) {
-      return res.status(400).json({ error: 'Security Exception: Candidate selection does not exist inside this ballot' });
-    }
-    if (context.already_voted) {
-      return res.status(409).json({ error: 'You have already recorded a vote within this election' });
+    if (!ctx.active) {
+      await query('ROLLBACK');
+      return res.status(403).json({
+        error: 'Your account is inactive.'
+      });
     }
 
-    // Atomic Insertion Step
-    const { rows } = await query(
-      'INSERT INTO votes (election_id, candidate_id, voter_id) VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id, created_at',
-      [electionId, candidateId, voterId]
+    if (now < new Date(ctx.starts_at)) {
+      await query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Voting has not started yet.'
+      });
+    }
+
+    if (now > new Date(ctx.ends_at)) {
+      await query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Voting has ended.'
+      });
+    }
+
+    if (!ctx.valid_candidate) {
+      await query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Invalid candidate for this election.'
+      });
+    }
+
+    const vote = await query(
+      `
+      INSERT INTO votes (
+        election_id,
+        candidate_id,
+        voter_id,
+        ip_address,
+        user_agent
+      )
+      VALUES (
+        $1::uuid,
+        $2::uuid,
+        $3::uuid,
+        $4,
+        $5
+      )
+      RETURNING id, created_at
+      `,
+      [
+        electionId,
+        candidateId,
+        voterId,
+        req.ip,
+        req.get('user-agent')
+      ]
     );
-    
-    res.status(201).json({ ok: true, ballotReceipt: rows[0].id });
+
+    await query('COMMIT');
+
+    return res.status(201).json({
+      ok: true,
+      receiptId: vote.rows[0].id,
+      votedAt: vote.rows[0].created_at
+    });
 
   } catch (err) {
+    await query('ROLLBACK');
+
+    // Duplicate vote blocked by UNIQUE(election_id, voter_id)
     if (err.code === '23505') {
-      return res.status(409).json({ error: 'You have already recorded a vote within this election' });
+      return res.status(409).json({
+        error: 'You have already voted in this election.'
+      });
     }
-    throw err; 
+
+    throw err;
   }
 }));
 
