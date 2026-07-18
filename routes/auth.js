@@ -36,7 +36,7 @@ const LoginSchema = z.object({
 r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const parsed = LoginSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Invalid input parameters' });
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid input parameters' });
   }
   
   const { email, password } = parsed.data;
@@ -95,10 +95,10 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   
   const parsed = Schema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.issues[0].message });
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid parameters' });
   }
 
-  // Fix: Added explicit ::app_role conversion cast to verify static string conditions safely
+  // Explicitly cast static text targets using the custom database ENUM to protect execution integrity
   const { rows: existing } = await query("SELECT 1 FROM users WHERE role = 'admin'::app_role LIMIT 1");
   if (existing && existing.length > 0) {
     return res.status(403).json({ error: 'Initial administrator bootstrapping has already concluded' });
@@ -107,7 +107,7 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
-    // Fix: Appended explicit 'admin'::app_role casting operator to conform with custom ENUM column constraints
+    // Appended explicit 'admin'::app_role casting operator to conform with custom ENUM column constraints
     const { rows } = await query(
       "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin'::app_role, $4::boolean) RETURNING id, email, full_name, role",
       [parsed.data.email, parsed.data.fullName, hash, "true"]
