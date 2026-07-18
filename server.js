@@ -90,8 +90,8 @@ app.use('/api/', limiter);
 // 2. Optimized Multi-Origin CORS Whitelist Configuration
 const allowedOrigins = [
   process.env.FRONTEND_URL,              
-  'http://localhost:3000',               
-  'http://localhost:5173'                
+  'https://cesa-vote.vercel.app',               
+  'https://cesa-vote.vercel.app'                
 ].filter(Boolean);                       
 
 app.use(cors({
