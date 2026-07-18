@@ -256,6 +256,49 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
   }
 }));
 
+// GET /elections/:id/my-vote
+r.get('/:id/my-vote', requireRole('voter'), asyncHandler(async (req, res) => {
+  const electionId = req.params.id;
+  const voterId = req.user.id;
+
+  const { rows } = await query(
+    `
+    SELECT
+      v.id,
+      v.candidate_id,
+      v.created_at,
+      c.name AS candidate_name
+    FROM votes v
+    JOIN candidates c
+      ON c.id = v.candidate_id
+    WHERE
+      v.election_id = $1::uuid
+      AND v.voter_id = $2::uuid
+    LIMIT 1
+    `,
+    [electionId, voterId]
+  );
+
+  if (rows.length === 0) {
+    return res.json({
+      hasVoted: false,
+      candidateId: null,
+      candidateName: null,
+      votedAt: null
+    });
+  }
+
+  const vote = rows[0];
+
+  return res.json({
+    hasVoted: true,
+    candidateId: vote.candidate_id,
+    candidateName: vote.candidate_name,
+    votedAt: vote.created_at,
+    receiptId: vote.id
+  });
+}));
+
 // Enhanced High-Speed Real-Time Live Results Engine
 r.get('/:id/results', asyncHandler(async (req, res) => {
   const electionId = req.params.id;
