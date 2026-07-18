@@ -57,7 +57,16 @@ export function clearAuthCookie(res) {
 }
 
 export function requireAuth(req, res, next) {
-  const token = req.cookies?.[COOKIE_NAME];
+  // 1. Primary Channel: Attempt to read token from inbound cookie payload
+  let token = req.cookies?.[COOKIE_NAME];
+  
+  // 2. Fallback Channel: If cookies are blocked/stripped by mobile browser tracking rules, capture the Bearer header
+  if (!token && req.headers.authorization) {
+    const parts = req.headers.authorization.split(' ');
+    if (parts[0] === 'Bearer' && parts[1]) {
+      token = parts[1];
+    }
+  }
   
   if (!token) {
     return res.status(401).json({ error: 'Authentication session token required.' });
@@ -91,7 +100,17 @@ export function requireAuth(req, res, next) {
  * Decodes expired payloads safely without triggering an immediate 401 halt.
  */
 export function requireExpiredAuth(req, res, next) {
-  const token = req.cookies?.[COOKIE_NAME];
+  // 1. Primary Channel: Attempt to read token from inbound cookie payload
+  let token = req.cookies?.[COOKIE_NAME];
+
+  // 2. Fallback Channel: Header inspector matching for token renewals
+  if (!token && req.headers.authorization) {
+    const parts = req.headers.authorization.split(' ');
+    if (parts[0] === 'Bearer' && parts[1]) {
+      token = parts[1];
+    }
+  }
+
   if (!token) return res.status(401).json({ error: 'Session renewal token missing.' });
 
   try {
