@@ -1,3 +1,4 @@
+// src/routes/notifications.js
 import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../db/pool.js';
@@ -18,14 +19,36 @@ const ParamSchema = z.object({
 
 // 1. Fetch Notification Feed capped at top 50 matches
 r.get('/', asyncHandler(async (req, res) => {
+  const voterId = req.user.id;
   const { rows } = await query(
-    'SELECT id, title, body, read_at, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
-    [req.user.id]
+    'SELECT id, title, body, read_at, created_at FROM notifications WHERE user_id = $1::uuid ORDER BY created_at DESC LIMIT 50',
+    [voterId]
   );
-  res.json(rows);
+  
+  // Format response parameters to mimic your refactored database array expectations uniformly
+  const formattedRows = Array.isArray(rows) ? rows : (rows ? [rows] : []);
+  res.json(formattedRows);
 }));
 
-// 2. Enhanced Single Read Marker featuring Param Guard and row checks
+// Fix 1: Global Read-All Mutation (Moved ABOVE the dynamic parameter route to fix Express router execution collisions)
+r.post('/read-all', asyncHandler(async (req, res) => {
+  const voterId = req.user.id;
+
+  // Fix 2 & 3: Added RETURNING clause to dynamically track metrics across stateless RPCs
+  const { rows } = await query(
+    'UPDATE notifications SET read_at = NOW() WHERE user_id = $1::uuid AND read_at IS NULL RETURNING id', 
+    [voterId]
+  );
+  
+  const updatedCount = Array.isArray(rows) ? rows.length : (rows ? 1 : 0);
+
+  res.json({ 
+    ok: true, 
+    message: `Successfully synchronized ${updatedCount} unread items in your feed container.` 
+  });
+}));
+
+// 2. Enhanced Single Read Marker featuring Param Guard, explicit UUID typecasting, and row checks
 r.post('/:id/read', asyncHandler(async (req, res) => {
   const parsed = ParamSchema.safeParse(req.params);
   if (!parsed.success) {
@@ -35,30 +58,18 @@ r.post('/:id/read', asyncHandler(async (req, res) => {
   const { id } = parsed.data;
   const userId = req.user.id;
 
-  const result = await query(
-    'UPDATE notifications SET read_at = NOW() WHERE id = $1 AND user_id = $2 AND read_at IS NULL', 
+  // Fix 2 & 3: Injected explicit trailing ::uuid casting adjustments alongside a RETURNING data anchor
+  const { rows } = await query(
+    'UPDATE notifications SET read_at = NOW() WHERE id = $1::uuid AND user_id = $2::uuid AND read_at IS NULL RETURNING id', 
     [id, userId]
   );
 
-  // Enhancement: Verify that a row was actually updated before returning a success payload
-  if (result.rowCount === 0) {
+  // Enhancement: Verify that a row was actually updated by assessing the array length bounds cleanly
+  if (!rows || (Array.isArray(rows) && rows.length === 0)) {
     return res.status(404).json({ error: 'Notification item not found or already marked as read' });
   }
 
   res.json({ ok: true, markedId: id });
-}));
-
-// 3. Global Read-All Mutation
-r.post('/read-all', asyncHandler(async (req, res) => {
-  const result = await query(
-    'UPDATE notifications SET read_at = NOW() WHERE user_id = $1 AND read_at IS NULL', 
-    [req.user.id]
-  );
-  
-  res.json({ 
-    ok: true, 
-    message: `Successfully synchronized ${result.rowCount} unread items in your feed container.` 
-  });
 }));
 
 export default r;
