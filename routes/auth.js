@@ -41,7 +41,7 @@ r.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   
   const { email, password } = parsed.data;
   const { rows } = await query(
-    'SELECT id, email, full_name, role, password_hash, active FROM users WHERE email = $1', 
+    'SELECT id, email, full_name, role, password_hash, active FROM users WHERE email = $1',
     [email]
   );
   
@@ -74,7 +74,7 @@ r.post('/logout', (req, res) => {
 // 3. Session Verification
 r.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await query(
-    'SELECT id, email, full_name, role FROM users WHERE id = $1::uuid', 
+    'SELECT id, email, full_name, role FROM users WHERE id = $1::uuid',
     [req.user.id]
   );
   
@@ -105,6 +105,7 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
     return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid parameters' });
   }
 
+  // Check if an admin already exists
   const { rows: existing } = await query(
     "SELECT 1 FROM users WHERE role = 'admin'::app_role LIMIT 1"
   );
@@ -115,9 +116,12 @@ r.post('/claim-first-admin', bootstrapLimiter, asyncHandler(async (req, res) => 
   const hash = await bcrypt.hash(parsed.data.password, 12);
   
   try {
+    // Insert new admin with proper enum and boolean casting
     const { rows } = await query(
-      "INSERT INTO users (email, full_name, password_hash, role, active) VALUES ($1, $2, $3, 'admin'::app_role, $4::boolean) RETURNING id, email, full_name, role, active",
-      [parsed.data.email, parsed.data.fullName, hash, true] // pass actual boolean
+      `INSERT INTO users (id, email, full_name, password_hash, role, active, created_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, 'admin'::app_role, $4::boolean, now())
+       RETURNING id, email, full_name, role, active, created_at`,
+      [parsed.data.email, parsed.data.fullName, hash, true]
     );
     
     const createdAdmin = rows[0];
