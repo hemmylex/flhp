@@ -145,7 +145,7 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
   const voterId = req.user.id;
   const { candidateId } = parsed.data;
 
-  // Validate election and candidate
+  // Validate election, user and candidate
   const { rows } = await query(
     `
     SELECT
@@ -213,17 +213,19 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
         $1::uuid,
         $2::uuid,
         $3::uuid,
-        $4,
+        $4::inet,
         $5
       )
-      RETURNING id, created_at
+      RETURNING
+        id,
+        created_at
       `,
       [
         electionId,
         candidateId,
         voterId,
-        req.ip,
-        req.get('user-agent')
+        req.ip || '127.0.0.1',
+        req.get('user-agent') || null
       ]
     );
 
@@ -235,7 +237,6 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
 
   } catch (err) {
 
-    // UNIQUE(election_id, voter_id)
     if (err.code === '23505') {
       return res.status(409).json({
         error: 'You have already voted in this election.'
