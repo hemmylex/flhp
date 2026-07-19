@@ -343,50 +343,6 @@ r.get('/:id/results', asyncHandler(async (req, res) => {
   });
 }));
 
-// Enhanced High-Speed Real-Time Live Results Engine
-r.get('/:id/results', asyncHandler(async (req, res) => {
-  const electionId = req.params.id;
-
-  // 1. Verify that the election exists first using accurate root array tracking
-  const { rows: electionCheck } = await query('SELECT title FROM elections WHERE id = $1::uuid', [electionId]);
-  
-  if (!electionCheck || electionCheck.length === 0) {
-    return res.status(404).json({ error: 'Target election parameters not found' });
-  }
-
-  // 2. Optimized aggregate compilation utilizing fast isolated scalar subqueries
-  const { rows } = await query(`
-    SELECT 
-      c.id, 
-      c.full_name, 
-      c.party, 
-      c.photo_url,
-      (SELECT COALESCE(COUNT(*), 0)::int FROM votes v WHERE v.candidate_id = c.id AND v.election_id = $1::uuid) AS votes
-    FROM candidates c
-    WHERE c.election_id = $1::uuid
-    ORDER BY votes DESC`, 
-    [electionId]
-  );
-
-  // 3. Enforce mathematical number type mapping to eliminate string concatenation bugs
-  const total = rows.reduce((acc, row) => acc + Number(row.votes || 0), 0);
-  
-  // 4. Format percentage distributions smoothly for charts
-  const candidatesWithMetrics = rows.map(r => ({
-    id: r.id,
-    full_name: r.full_name,
-    party: r.party,
-    photo_url: r.photo_url,
-    votes: Number(r.votes || 0),
-    pct: total > 0 ? Number(((Number(r.votes) / total) * 100).toFixed(4)) : 0
-  }));
-
-  res.json({ 
-    electionTitle: electionCheck[0].title,
-    total, 
-    candidates: candidatesWithMetrics 
-  });
-}));
 
 export default r;
 
