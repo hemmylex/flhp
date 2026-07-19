@@ -292,5 +292,47 @@ r.get('/:id/results', asyncHandler(async (req, res) => {
 }));
 
 
+// GET /elections/:id/my-vote
+
+r.get(
+  '/:id/my-vote',
+  requireRole('voter'),
+  asyncHandler(async (req, res) => {
+    const electionId = req.params.id;
+    const voterId = req.user.id;
+
+    const { rows } = await query(
+      `
+      SELECT
+        v.id,
+        v.candidate_id,
+        v.created_at,
+        c.full_name AS candidate_name,
+        c.party,
+        c.photo_url
+      FROM votes v
+      JOIN candidates c
+        ON c.id = v.candidate_id
+      WHERE
+        v.election_id = $1::uuid
+        AND v.voter_id = $2::uuid
+      LIMIT 1
+      `,
+      [electionId, voterId]
+    );
+
+    if (rows.length === 0) {
+      return res.json({
+        voted: false
+      });
+    }
+
+    return res.json({
+      voted: true,
+      vote: rows[0]
+    });
+  })
+);
+
 export default r;
 
