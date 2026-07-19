@@ -137,7 +137,7 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
 
   if (!parsed.success) {
     return res.status(400).json({
-      error: 'Invalid payload input structure'
+      error: 'Invalid payload.'
     });
   }
 
@@ -145,68 +145,61 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
   const voterId = req.user.id;
   const { candidateId } = parsed.data;
 
-  await query('BEGIN');
+  // Validate election and candidate
+  const { rows } = await query(
+    `
+    SELECT
+      e.starts_at,
+      e.ends_at,
+      u.active,
+      EXISTS (
+        SELECT 1
+        FROM candidates c
+        WHERE c.id = $1::uuid
+          AND c.election_id = $2::uuid
+      ) AS valid_candidate
+    FROM elections e
+    JOIN users u
+      ON u.id = $3::uuid
+    WHERE e.id = $2::uuid
+    `,
+    [candidateId, electionId, voterId]
+  );
+
+  if (!rows.length) {
+    return res.status(404).json({
+      error: 'Election not found.'
+    });
+  }
+
+  const ctx = rows[0];
+  const now = new Date();
+
+  if (!ctx.active) {
+    return res.status(403).json({
+      error: 'Your account is inactive.'
+    });
+  }
+
+  if (now < new Date(ctx.starts_at)) {
+    return res.status(400).json({
+      error: 'Voting has not started.'
+    });
+  }
+
+  if (now > new Date(ctx.ends_at)) {
+    return res.status(400).json({
+      error: 'Voting has ended.'
+    });
+  }
+
+  if (!ctx.valid_candidate) {
+    return res.status(400).json({
+      error: 'Invalid candidate.'
+    });
+  }
 
   try {
-    // Validate election, voter and candidate
-    const { rows } = await query(
-      `
-      SELECT
-        e.starts_at,
-        e.ends_at,
-        u.active,
-        EXISTS (
-          SELECT 1
-          FROM candidates c
-          WHERE c.id = $1::uuid
-            AND c.election_id = $2::uuid
-        ) AS valid_candidate
-      FROM elections e
-      JOIN users u
-        ON u.id = $3::uuid
-      WHERE e.id = $2::uuid
-      `,
-      [candidateId, electionId, voterId]
-    );
-
-    if (rows.length === 0) {
-      await query('ROLLBACK');
-      return res.status(404).json({
-        error: 'Election not found'
-      });
-    }
-
-    const ctx = rows[0];
-    const now = new Date();
-
-    if (!ctx.active) {
-      await query('ROLLBACK');
-      return res.status(403).json({
-        error: 'Your account is inactive.'
-      });
-    }
-
-    if (now < new Date(ctx.starts_at)) {
-      await query('ROLLBACK');
-      return res.status(400).json({
-        error: 'Voting has not started yet.'
-      });
-    }
-
-    if (now > new Date(ctx.ends_at)) {
-      await query('ROLLBACK');
-      return res.status(400).json({
-        error: 'Voting has ended.'
-      });
-    }
-
-    if (!ctx.valid_candidate) {
-      await query('ROLLBACK');
-      return res.status(400).json({
-        error: 'Invalid candidate for this election.'
-      });
-    }
-
     const vote = await query(
       `
       INSERT INTO votes (
@@ -234,8 +227,6 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
       ]
     );
 
-    await query('COMMIT');
-
     return res.status(201).json({
       ok: true,
       receiptId: vote.rows[0].id,
@@ -243,9 +234,8 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
     });
 
   } catch (err) {
-    await query('ROLLBACK');
 
-    // Duplicate vote blocked by UNIQUE(election_id, voter_id)
+    // UNIQUE(election_id, voter_id)
     if (err.code === '23505') {
       return res.status(409).json({
         error: 'You have already voted in this election.'
@@ -255,48 +245,6 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
     throw err;
   }
 }));
-
-// GET /elections/:id/my-vote
-
-r.get(
-  '/:id/my-vote',
-  requireRole('voter'),
-  asyncHandler(async (req, res) => {
-    const electionId = req.params.id;
-    const voterId = req.user.id;
-
-    const { rows } = await query(
-      `
-      SELECT
-        v.id,
-        v.candidate_id,
-        v.created_at,
-        c.full_name AS candidate_name,
-        c.party,
-        c.photo_url
-      FROM votes v
-      JOIN candidates c
-        ON c.id = v.candidate_id
-      WHERE
-        v.election_id = $1::uuid
-        AND v.voter_id = $2::uuid
-      LIMIT 1
-      `,
-      [electionId, voterId]
-    );
-
-    if (rows.length === 0) {
-      return res.json({
-        voted: false
-      });
-    }
-
-    return res.json({
-      voted: true,
-      vote: rows[0]
-    });
-  })
-);
 
 // Enhanced High-Speed Real-Time Live Results Engine
 r.get('/:id/results', asyncHandler(async (req, res) => {
