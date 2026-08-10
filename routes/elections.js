@@ -170,7 +170,7 @@ r.post('/:id/vote', requireRole('voter'), asyncHandler(async (req, res) => {
     const result = await query(
       `
       INSERT INTO votes (election_id, candidate_id, voter_id, ip_address, user_agent)
-      VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5)
+      VALUES ($1::uuid, $2::uuid, $3::uuid, $4::inet, $5)
       RETURNING id, created_at
       `,
       [electionId, candidateId, voterId, req.ip, req.get('user-agent')]
