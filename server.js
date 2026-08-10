@@ -85,6 +85,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+app.set('trust proxy', 1);
 app.use('/api/', limiter);
 
 // 2. Optimized Multi-Origin CORS Whitelist Configuration
