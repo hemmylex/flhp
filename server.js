@@ -76,7 +76,7 @@ app.use(helmet({
 
 app.use(express.json({ limit: '5mb' })); 
 app.use(cookieParser());
-
+app.set('trust proxy', 1);
 // Anti-bombardment layer restricted exclusively to sensitive domain route clusters
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
@@ -85,7 +85,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.set('trust proxy', 1);
+
 app.use('/api/', limiter);
 
 // 2. Optimized Multi-Origin CORS Whitelist Configuration
